@@ -19,28 +19,26 @@ def zagruzit(put: str) -> dict:
         return json.load(fh)
 
 
-def sdelki_s_vvozyami(ast: dict, papka: str, vidennye=None) -> dict:
+def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -> dict:
     """Словарь сделок файла + ВВОЗЫ ПО ХЕШУ (ступень 2).
 
     Раздел файла: «ввозы»: [{договор, из, хеш}] — «из» — имя файла рядом
     (без расширения; пробуются .deal и .deal.json). Хеш канона ввозимого
     файла обязан совпасть заявленному БАЙТ-В-БАЙТ: договор приезжает ровно
-    тот, что назван, не «похожий». Ввозимый файл может сам иметь ввозы
-    (рекурсия, циклы ловятся). Отказы словами:
+    тот, что назван, не «похожий». Ввозимый файл может сам иметь ввозы.
+    [v0.1.3, аудит: цикл судится ПО ПУТИ (стек), а не глобально — ромб
+    A→{B,C}, B→D, C→D легален; повторный ввоз того же ХЕША дедуплицируется
+    (кэш по хешу), расхождение хеша — нарушен_договор.] Отказы словами:
       полка_не_доступна — файла нет рядом;
-      нарушен_договор   — хеш не совпал / имя занято местной сделкой / цикл;
+      нарушен_договор   — хеш не совпал / имя занято местной сделкой / цикл по пути;
       нет_договора      — имени нет в ввозимом файле.
     """
-    vidennye = set() if vidennye is None else vidennye
+    put_steka = [] if put_steka is None else put_steka
+    kesh_heshey = {} if kesh_heshey is None else kesh_heshey
     sdelki = {s["имя"]: s for s in ast.get("сделки", [])}
     for vvoz in ast.get("ввозы", []):
         imya = vvoz.get("договор", "?")
         iz = vvoz.get("из", "?")
-        marker = (iz, imya)
-        if marker in vidennye:
-            raise _dvm.DealOtkaz("нарушен_договор",
-                                 "ввоз «%s» из «%s»: повторный или закольцованный" % (imya, iz))
-        vidennye.add(marker)
         put = None
         for rassh in (".deal", ".deal.json"):
             kandidat = os.path.join(papka, iz + rassh)
@@ -50,21 +48,45 @@ def sdelki_s_vvozyami(ast: dict, papka: str, vidennye=None) -> dict:
         if not put:
             raise _dvm.DealOtkaz("полка_не_доступна",
                                  "ввоз «%s»: файла «%s» нет рядом с %s" % (imya, iz, papka))
-        chuzhoj = zagruzit(put)
-        hesh_fakt = hesh(chuzhoj)
+        if put in put_steka:
+            raise _dvm.DealOtkaz("нарушен_договор",
+                                 "ввоз «%s» из «%s»: цикл по пути ввозов" % (imya, iz))
+        chuzhoj = None
+        hesh_fakt = None
+        # [v0.1.3] дедуп по содержанию: тот же файл в другой ветке — тот же договор
+        kesh = kesh_heshey.get(put)
+        if kesh is not None:
+            hesh_fakt, chuzhoj = kesh
+        else:
+            chuzhoj = zagruzit(put)
+            hesh_fakt = hesh(chuzhoj)
+            kesh_heshey[put] = (hesh_fakt, chuzhoj)
         if hesh_fakt != vvoz.get("хеш"):
             raise _dvm.DealOtkaz("нарушен_договор",
                                  "ввоз «%s» из «%s»: хеш файла не совпал заявленному "
                                  "(%s… ≠ %s…) — договор изменился" % (imya, iz, hesh_fakt[:12],
                                                                       str(vvoz.get("хеш"))[:12]))
-        chuzhie = sdelki_s_vvozyami(chuzhoj, os.path.dirname(put), vidennye)
+        if imya in sdelki and sdelki[imya] is not chuzhie[imya]:
+            raise _dvm.DealOtkaz("нарушен_договор",
+                                 "ввоз «%s»: имя занято местной сделкой" % imya)
+        chuzhie = sdelki_s_vvozyami(chuzhoj, os.path.dirname(put),
+                                    put_steka + [put], kesh_heshey)
         if imya not in chuzhie:
             raise _dvm.DealOtkaz("нет_договора",
                                  "ввоз «%s» из «%s»: сделки с таким именем нет (есть: %s)"
                                  % (imya, iz, ", ".join(sorted(chuzhie))))
-        if imya in sdelki:
-            raise _dvm.DealOtkaz("нарушен_договор",
-                                 "ввоз «%s»: имя занято местной сделкой" % imya)
+        # [v0.1.3, аудит-ромб: ввоз привозит ВСЁ окружение ввозимого файла —
+        # «удвои» из D нужен телу «четыре» из B; раньше в словарь попадала
+        # только названная сделка, и её зовы падали нет_договора. Коллизия
+        # имён между ветками — нарушен_договор, тот же объект — не трогаем.]
+        for imya2, sdelka2 in chuzhie.items():
+            if imya2 in sdelki:
+                if sdelki[imya2] is sdelka2:
+                    continue
+                raise _dvm.DealOtkaz("нарушен_договор",
+                                     "ввоз «%s» из «%s»: имя «%s» занято другим ввозом — "
+                                     "переименуй" % (imya, iz, imya2))
+            sdelki[imya2] = sdelka2
         sdelki[imya] = chuzhie[imya]
     return sdelki
 

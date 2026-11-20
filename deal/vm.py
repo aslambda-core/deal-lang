@@ -11,6 +11,7 @@
 Файлы полки исполняются ТОЛЬКО под E:\\DEAL_PILOT\\polka — наружу нельзя.
 """
 import copy
+import decimal
 import hashlib
 import io
 import json
@@ -56,10 +57,16 @@ def _okrugleno(args):
     # 1.0 вместо 1.01. Decimal от СТРОКОВОГО представления снимает беду;
     # ROUND_HALF_UP = половина вверх от нуля — тот же канон.]
     import decimal
-    x = decimal.Decimal(str(float(args[0])))
+    # [v0.1.3, аудит: 1e30 при precision 28 давал InvalidOperation наружу —
+    # локальный контекст с запасом + DecimalException ловится безопасной
+    # обёрткой в канон-отказ]
+    x = decimal.Decimal(str(args[0])) if not isinstance(args[0], float) \
+        else decimal.Decimal(str(args[0]))
     n = int(args[1])
-    koeff = decimal.Decimal(1).scaleb(-n)
-    return float(x.quantize(koeff, rounding=decimal.ROUND_HALF_UP))
+    with decimal.localcontext() as kt:
+        kt.prec = max(60, len(x.as_tuple().digits) + abs(n) + 10)
+        koeff = decimal.Decimal(1).scaleb(-n)
+        return float(x.quantize(koeff, rounding=decimal.ROUND_HALF_UP))
 
 
 def _summa(args):
@@ -105,7 +112,10 @@ def _bezopasno(imya, funk):
         except DealOtkaz:
             raise
         except (TypeError, ValueError, ZeroDivisionError, AttributeError,
-                IndexError, KeyError, OverflowError) as beda:
+                IndexError, KeyError, OverflowError,
+                decimal.DecimalException) as beda:
+            # [v0.1.3, аудит: InvalidOperation — ArithmeticError, сеть его не
+            # ловила; огромные суммы за пределами контекста — канон-отказ]
             raise DealOtkaz("типы_не_сошлись",
                             "примитив «%s» не взял аргументы: %s: %s — проверь типы и края"
                             % (imya, type(beda).__name__, str(beda)[:90]))
@@ -166,6 +176,13 @@ def _арифметика(lev, chem, prav):
     if chem == "-":
         return lev - prav
     if chem == "*":
+        # [v0.1.3, аудит: строка*число — питон-наследие; канон арифметики
+        # оперирует числами, склейка строк — примитивник склейка]
+        if isinstance(lev, str) or isinstance(prav, str) \
+                or isinstance(lev, bool) or isinstance(prav, bool):
+            raise DealOtkaz("типы_не_сошлись",
+                            "арифметика «*»: %s с %s не умножить — приведи типы "
+                            "(строки склеивает склейка)" % (_имя_типа(lev), _имя_типа(prav)))
         return lev * prav
     if chem == "/":
         if prav == 0:
@@ -319,10 +336,12 @@ def _polka_chitai_kanon(adres):
 
 
 def _polka_zapis_kanon(adres, znach):
-    """полка-пиши: tmp+replace (атомарно) + кэш обновляется сам."""
+    """полка-пиши: tmp+replace (атомарно) + кэш обновляется сам.
+    [v0.1.3, аудит: фиксированное имя .tmp — гонка двух писцов; tmp
+    уникален (pid+счётчик), папка та же — replace остаётся атомарным.]"""
     put = _polka_put(adres)
     os.makedirs(os.path.dirname(put), exist_ok=True)
-    tmp = put + ".tmp"
+    tmp = "%s.tmp.%d.%s" % (put, os.getpid(), os.urandom(4).hex())
     with io.open(tmp, "w", encoding="utf-8") as fh:
         json.dump(znach, fh, ensure_ascii=False, sort_keys=True)
     os.replace(tmp, put)
@@ -343,7 +362,9 @@ def _polka_chitai_ili_kanon(adres, umolchanie):
 
 # ── исполнение тела ──
 
-_ГЛУБИНА_ПОТОЛОК = 300   # [2.0 П2] рекурсия зова — под контрактом, не RecursionError
+ГЛУБИНА_ПОТОЛОК = 300   # [2.0 П2] рекурсия зова — под контрактом; [v0.1.3]
+                         # настраиваема: vm.ГЛУБИНА_ПОТОЛОК = N (решение владельца)
+_ГЛУБИНА_ПОТОЛОК = 300
 # [v0.1.2, аудит: цикл до 10^12 вешал расчёт — «топливо» считает шаги тела;
 # лимит на расчёт (сбрасывается на каждом свидетель-кейсе), превышение —
 # канон-отказ. Названо версией v0.1.2.]
@@ -478,10 +499,10 @@ def zov_sdelki(sdelka, argy, sdelki):
                         % (sdelka.get("имя", "?"), len(vhody), len(argy)))
     _глубина += 1
     try:
-        if _глубина > _ГЛУБИНА_ПОТОЛОК:
+        if _глубина > ГЛУБИНА_ПОТОЛОК:
             raise DealOtkaz("глубина",
                             "рекурсия глубже %d: сделка «%s» зовёт себя без остановки"
-                            % (_ГЛУБИНА_ПОТОЛОК, sdelka.get("имя", "?")))
+                            % (ГЛУБИНА_ПОТОЛОК, sdelka.get("имя", "?")))
         env = {}
         for vhod, znach in zip(vhody, argy):
             env[vhod["имя"]] = znach
@@ -507,10 +528,16 @@ def _sravnit(polucheno, ozhidaemoe) -> bool:
         return polucheno == ozhidaemoe   # [v0.1.2] целые — ТОЧНО: float съедает
                                          # 1e17+5 против 1e17 ещё до сравнения
     if isinstance(ozhidaemoe, (int, float)) and isinstance(polucheno, (int, float)):
-        a, b = float(polucheno), float(ozhidaemoe)
-        if a.is_integer() and b.is_integer():
-            return a == b
-        return abs(a - b) < 1e-9   # дробные: допуск 1e-9 — канон (деньги)
+        # [v0.1.3, аудит: int 1e16+1 против float 1e16 — каст во float прятал
+        # потерю; смешанная пара (int↔float) сравнивается ТОЧНО: float обязан
+        # быть целым по значению и совпасть, дробный float против int — разные]
+        lev_int = isinstance(polucheno, int)
+        prav_int = isinstance(ozhidaemoe, int)
+        if lev_int or prav_int:
+            if (float(polucheno).is_integer() and float(ozhidaemoe).is_integer()):
+                return int(polucheno) == int(ozhidaemoe)
+            return False
+        return abs(polucheno - ozhidaemoe) < 1e-9   # дробные с дробным: канон 1e-9
     return polucheno == ozhidaemoe
 
 
@@ -541,7 +568,7 @@ def gonit_svideteley(sdelka, sdelki) -> dict:
                 proverka = _ТИПЫ.get(v["тип"])
                 if proverka and not proverka(env[v["имя"]]):
                     itogi.append({"кейс": n,
-                                  "ожидали": "отказ тии_не_сошлись",
+                                  "ожидали": "отказ типы_не_сошлись",
                                   "получили": ("отказ", "типы_не_сошлись"),
                                   "сошлось": False,
                                   "даёт": True,

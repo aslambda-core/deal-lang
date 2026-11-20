@@ -213,13 +213,48 @@ def stadija_5(ast: dict) -> str:
     return dast.hesh(ast)
 
 
+def _pred_hesh_letopisi() -> str:
+    """[v0.1.3, аудит: хеш-цепочка — каждая запись несёт хеш предыдущей;
+    укорачивание ломает цепь — «нельзя укоротить» становится проверяемым.]"""
+    if not os.path.exists(LETOPIS):
+        return ""
+    pred = ""
+    with io.open(LETOPIS, encoding="utf-8") as fh:
+        for stroka in fh:
+            stroka = stroka.strip()
+            if not stroka:
+                continue
+            try:
+                pred = json.loads(stroka).get("hesh_zapisi", pred)
+            except ValueError:
+                pass
+    return pred
+
+
 def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
-    """Летопись (нельзя укоротить) + реестр (хеш → компонент)."""
-    zapis = {"kogda": time.time(), "kto": kto, "hesh": hesh,
+    """Летопись (нельзя укоротить) + реестр (хеш → компонент).
+    [v0.1.3, аудит: хеш уже в реестре — лёгкая запись без полного AST;
+    append-only реестр не раздувается дублями.]"""
+    pred = _pred_hesh_letopisi()
+    zapis = {"kogda": time.time(), "kto": kto, "hesh": hesh, "pred": pred,
              "sdelki": [s["имя"] for s in ast.get("сделки", [])],
              "zelenye": sum(1 for s in svody if s["зелёная"]),
              "vsego": len(svody)}
-    for put, obekt in ((LETOPIS, zapis), (REESTR, {**zapis, "ast": ast})):
+    zapis["hesh_zapisi"] = dast.hesh(json.dumps({k: v for k, v in zapis.items()},
+                                           ensure_ascii=False, sort_keys=True))
+    uzh = False
+    if os.path.exists(REESTR):
+        with io.open(REESTR, encoding="utf-8") as fh:
+            for stroka in fh:
+                if '"hesh"' in stroka and ('"' + hesh + '"') in stroka:
+                    uzh = True
+                    break
+    reestr_zapis = {**zapis}
+    if uzh:
+        reestr_zapis["tip"] = "povtor"
+    else:
+        reestr_zapis["ast"] = ast
+    for put, obekt in ((LETOPIS, zapis), (REESTR, reestr_zapis)):
         with io.open(put, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(obekt, ensure_ascii=False, sort_keys=True) + "\n")
 

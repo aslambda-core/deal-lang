@@ -155,7 +155,7 @@ def _komp_vyrazh(expr, kod):
 def _polka_zapis(adres, znach):
     put = _polka_put(adres)
     os.makedirs(os.path.dirname(put), exist_ok=True)
-    tmp = put + ".tmp"
+    tmp = "%s.tmp.%d.%s" % (put, os.getpid(), os.urandom(4).hex())  # [v0.1.3] гонка писцов
     with io.open(tmp, "w", encoding="utf-8") as fh:
         json.dump(znach, fh, ensure_ascii=False, sort_keys=True)
     os.replace(tmp, put)

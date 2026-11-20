@@ -44,7 +44,8 @@ def funkciya(telo):
         stroki.append("    except (TypeError, ValueError, AttributeError, IndexError, OverflowError) as beda:")
         stroki.append('        raise DealOtkaz("типы_не_сошлись", "в кодоген-теле: %s: %s — проверь типы и края" % (type(beda).__name__, str(beda)[:80]))')
         prostor = {"DealOtkaz": DealOtkaz, "_pr": PRIMITIVY, "_zv": zov_sdelki,
-                    "_a": _арифметика, "_pz": _polka_zapis, "_pc": _polka_chitai}
+                    "_a": _арифметика, "_pz": _polka_zapis, "_pc": _polka_chitai,
+                    "_sf": dvm._shag}   # [v0.1.3] топливо в кодогене
         exec(compile("\n".join(stroki), "<kodogen>", "exec"), prostor)
         _КАШ[klyuch] = (telo, prostor["_f"])
     return _КАШ[klyuch][1]
@@ -145,6 +146,7 @@ def _gen_telo(telo, otstup, stroki):
                                 "имя переменной цикла «%s» — не идентификатор канона "
                                 "(латиница/кириллица/цифры/_ без кавычек и черточек)" % perem)
             stroki.append("%sfor %s in range(int(%s)):" % (otstup, perem, _vyr(st["до"])))
+            stroki.append("%s    _sf()" % otstup)   # [v0.1.3] топливо в кодогене
             stroki.append("%s    env[%s] = %s" % (otstup, repr(perem), perem))
             _gen_telo(st.get("тело", []), otstup + "    ", stroki)
         else:
