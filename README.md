@@ -1,102 +1,102 @@
+# DEAL — the language of contracts
+
+**A contract-first programming language designed for AI-authored code.**
+[Русский ниже](#deal--язык-договоров)
+
+AI systems fail not at writing code, but at the free-text channel to it:
+hallucinations live where an AI can write something "plausible" and it
+ends up somewhere real. DEAL removes the channel. An AI never edits text —
+it submits **verifiable transformations** over a canonical AST, and the
+compiler is the only thing that ever touches the code, judging every
+transaction mechanically.
+
+```text
+ AI (head / hands / small models)
+      |  submits a TRANSFORMATION (atomic AST operation)
+      v
+ DEAL COMPILER (8 stages)
+      |  completeness court -> feasibility court -> witness execution
+      |  -> serial hash -> chronicle -> registry
+      |  REFUSAL is always verbal (culprit + cause + what to fix)
+      v
+ .deal COMPONENT = canonical AST (single source of truth)
+                      \--> PROJECTION (readable view, always printed from the AST)
+```
+
+## Example in 60 seconds
+
+```text
+contract деление(a: int, b: int) -> int
+  requires  b != 0
+  ensures   rounded(a / b, 2)
+  refusal   деление_на_ноль
+
+deal цена_за_единицу(месячный: int, человек: int) -> int
+  body:
+    price = деление(месячный, человек)
+    return price
+  witness:
+    месячный=100000, человек=4  -> 25000.00
+    месячный=100000, человек=0  -> refusal деление_на_ноль
+```
+
+- A `.deal` file stores the **machine-readable AST (JSON)** — the single
+  source of truth. There is no "program text" to drift.
+- The human-readable **projection is printed** from the AST — it cannot
+  be written by hand, only rendered.
+- **Witnesses** (input -> output / refusal) are executed by the compiler
+  in a sandbox. Plausible-but-unverified code cannot pass.
+- Every refusal is verbal: `{stage, culprit, cause, what_to_fix}` —
+  the AI fixes itself without a human in the loop.
+
+## Properties (each with a mechanism)
+
+1. **Decompilation always, losslessly** — "decompile" means "print the AST".
+2. **Canon** — one spelling, one encoding, one form of every construct.
+3. **Address = hash of the contract** — components recognise each other
+   by content, not paths; loose dependencies are impossible.
+4. **Chronicle built into the runtime** — every transformation is
+   recorded as before/after; history cannot be shortened.
+5. **Machine verdicts** — a witness verdict is computed, never read.
+6. **Refusals are always verbal** — no silent failures.
+7. **Export modes** — transparent `.deal` or native binary without the
+   AST, per component; the AST always stays in the vault.
+
+## Status
+
+A live pilot has closed stages 0–3 (Python VM -> self-compilation,
+byte-for-byte) and is running stage 4: the x86-64 emitter is itself
+written in DEAL. On vector workloads DEAL matches Rust (both sides
+vectorized) and is 1350+ times faster than Python on the same task.
+Full documentation, an interactive Python/Rust/DEAL benchmark, a
+downloadable compiler and a browser interpreter: [deal-lang.lteam.ru](https://deal-lang.lteam.ru/).
+
+## License
+
+[MIT](LICENSE)
+
+---
+
 # DEAL — язык договоров
 
-**Статус: язык в постройке.** Проект живого дома AI_AUTO; документация и
-дорога стабильны, реализация растёт ступенями (см. «Дорога» ниже).
+**Язык с договорами прежде всего — спроектирован для кода, который пишет ИИ.**
 
-DEAL убирает свободный текстовый канал между ИИ и кодом: ИИ не редактирует
-текст — ИИ подаёт **верифицируемые превращения** над каноничным AST, а
-компилятор единственный касается кода и судит каждую сделку машинно.
-
-```
- ИИ (голова/руки/малые модели)
-      │  подаёт ПРЕВРАЩЕНИЕ (атомарная операция над AST: ввести-сделку, заменить-тело…)
-      ▼
- КОМПИЛЯТОР DEAL (8 стадий)
-      │  суд полноты → суд выполнимости → исполнение свидетелей
-      │  → серийный хеш → летопись → реестр
-      │  ОТКАЗ — всегда словами (виновник + причина + что править)
-      ▼
- .deal-КОМПОНЕНТ = канон-AST (единственный источник)
-                     └──▶ ПРОЕКЦИЯ (читаемый вид, печатается из AST всегда)
-```
-
-## Пример за 60 секунд
-
-```
-договор деление(а: число, б: число) -> число
-  требует  б != 0
-  даёт     округлено(а / б, 2)
-  отказ    деление_на_ноль
-
-сделка цена_за_единицу(месячный: число, человек: число) -> число
-  тело:
-    цена  = деление(месячный, человек)
-    верни цена
-  свидетель:
-    месячный=100000, человек=4 -> 25000.00
-    месячный=100000, человек=0 -> отказ деление_на_ноль
-```
+ИИ ненадёжен не в написании кода, а в свободном текстовом канале к нему:
+галлюцинация живёт там, где ИИ может написать «похоже на правду» и это
+куда-то попадёт. DEAL убирает канал. ИИ не редактирует текст — ИИ подаёт
+**верифицируемые превращения** над каноничным AST, а компилятор
+единственный касается кода и судит каждую сделку машинно.
 
 - Файл `.deal` хранит **машиночитаемый AST в JSON** — единственный источник.
-- Проекция (читаемый вид) **печатается** из AST — её нельзя написать криво.
-- Свидетели (вход→выход/отказ) исполняются компилятором: правдоподобное
-  не проходит, верифицированное проходит.
-- Каждый отказ словами: `{стадия, виновник, причина, что_править}` — ИИ
-  исправляет по словам, без человека.
+- Читаемая **проекция печатается** из AST — её нельзя написать руками.
+- **Свидетели** (вход → выход / отказ) исполняются компилятором в песочнице.
+- Каждый отказ — словами: `{стадия, виновник, причина, что_править}`.
 
-## Свойства-обещания
+## Статус
 
-1. **Декомпиляция всегда и без потерь** — «декомпилировать» = напечатать AST.
-2. **Канон** — одно написание, одна кодировка utf-8, один вид каждой конструкции.
-3. **Адрес = хеш договора** — компоненты узнают друг друга по содержанию, не по путям.
-4. **Летопись вшита в рантайм** — каждое превращение записано было→стало.
-5. **Свидетельства машинны** — вердикт считан, не прочитан.
-6. **Отказ всегда словами** — молчаливых пустот нет.
-7. **Режимы экспорта** — прозрачный `.deal` или натив без AST, по компоненту.
-
-## Дорога — пять ступеней
-
-| Ступень | Что строится | Статус |
-|---|---|---|
-| 0 | Корпус договоров → спецификация языка | пилот |
-| 1 | Питон-ВМ + компилятор (8 стадий) | закрыта в пилоте (25/25 байт-в-байт) |
-| 2 | Самокомпиляция DEAL→DEAL | закрыта в пилоте (27/27) |
-| 3 | Миграция конвейера | закрыта в пилоте |
-| 4 | Натив: свой байткод → машинный код x86-64 | живёт (эмиссор написан НА DEAL) |
-
-Ступени 0–3 закрыты пилотом вне дома (`E:\DEAL_PILOT`, летопись — REPORT.md);
-ступень 4 живёт: SSE2-редукция излучается нативом inline-рутиной, на векторной
-задаче DEAL сопоставим с растом и ×1350+ быстрее питона. Принцип языка —
-универсальность бэкендов: программа говорит «что», примитивник (замороженный,
-подменяемый) говорит «где» — CPU-питон, CPU-натив, GPU-ядра.
-
-## Документация
-
-Полные шесть частей — на сайте [deal-lang.lteam.ru](https://deal-lang.lteam.ru/)
-и в [`docs/`](docs/):
-
-| Часть | Что внутри |
-|---|---|
-| [Мастер-документ](docs/DEAL.md) | гипотеза, конвейер, решения, рубильники, карта частей |
-| [Язык](docs/DEAL_YAZYK.md) | канон-AST, проекция, декомпиляция, синтаксис, 16 превращений |
-| [Компилятор](docs/DEAL_KOMPILYATOR.md) | 8 стадий, отказы словами, суд свидетельств, bootstrap |
-| [Рой и модели](docs/DEAL_ROY_I_MODELI.md) | службы, кладка DEAL, роли моделей, полка |
-| [Обучение AGI](docs/DEAL_AGI_OBUCHENIE.md) | слайс-дверь, LoRA-корпус, кросс-прогон |
-| [Риски и дорога](docs/DEAL_RISKI_DOROGA.md) | 14 рисков, ступени со стоп-условиями |
-
-## English TL;DR
-
-**DEAL** is a contract-first programming language designed for AI authors:
-instead of free-text edits, an AI submits *verifiable transformations* over a
-canonical AST; the compiler is the only thing that ever touches the code and
-judges every transaction mechanically. `.deal` files store the AST (JSON) as
-the single source of truth; human-readable *projection* is always printed from
-it; witnesses (input→output/refusal cases) are executed in a sandbox —
-plausible-but-unverified code cannot pass. Refusals are always verbal
-(stage, culprit, cause, what to fix), so AI fixes itself without a human in
-the loop. Bootstrapped Python→self→native: stages 0–3 are closed in a live
-pilot, the x86-64 emitter is itself written in DEAL.
-
-## Лицензия
-
-[MIT](LICENSE) — код и документация свободны к использованию со ссылкой.
+Живой пилот закрыл ступени 0–3 (питон-ВМ → самокомпиляция, байт-в-байт)
+и живёт на ступени 4: эмиссор x86-64 написан НА DEAL. На векторных
+задачах DEAL сопоставим с Rust (обе стороны векторные) и на ×1350+
+быстрее питона на той же задаче. Полная документация, интерактивный
+бенчмарк Python/Rust/DEAL, скачиваемый компилятор и веб-интерпретатор:
+[deal-lang.lteam.ru](https://deal-lang.lteam.ru/).
