@@ -70,11 +70,21 @@ def sdelki_s_vvozyami(ast: dict, papka: str, vidennye=None) -> dict:
 
 
 def zagruzit(put: str) -> dict:
+    # [v0.1.2, аудит: NaN/Infinity — невалидный JSON для строгих парсеров;
+    # канон запрещает их на входе, не на выходе serialization]
+    def _zapret(slovo):
+        raise _dvm.DealOtkaz("типы_не_сошлись",
+                             "константа «%s» запрещена каноном (невалидный JSON) — "
+                             "замени числом" % slovo)
     with io.open(put, encoding="utf-8") as fh:
-        return json.load(fh)
+        return json.load(fh, parse_constant=_zapret)
 
 
 def kanon(obj) -> str:
+    """Единственный серийный вид AST: сортировка ключей, без пробелов, utf-8.
+    [v0.1.2] allow_nan=False — NaN не сериализуется молча.]"""
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False)
     """Единственный серийный вид AST: сортировка ключей, без пробелов, utf-8."""
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

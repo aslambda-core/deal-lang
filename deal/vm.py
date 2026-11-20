@@ -10,6 +10,7 @@
   - скрытые кейсы не генерируются (суд краёв руками корпуса).
 Файлы полки исполняются ТОЛЬКО под E:\\DEAL_PILOT\\polka — наружу нельзя.
 """
+import copy
 import hashlib
 import io
 import json
@@ -25,7 +26,10 @@ KANON_OTKAZY = {"деление_на_ноль", "нарушен_договор",
                 "нет_договора", "нет_имени", "нет_операции", "полка_наружу",
                 # [2.0 П2: отказ-канон полный — ни одна операция ВМ не падает
                 # питон-исключением; три канона назвали то, что раньше роняло]
-                "типы_не_сошлись", "за_краем", "глубина"}
+                "типы_не_сошлись", "за_краем", "глубина",
+                # [v0.1.2, аудит: топливо — расчёт израсходовал лимит шагов;
+                # названо версией, канон-список растёт решением по версии]
+                "топливо"}
 
 
 class DealOtkaz(Exception):
@@ -48,12 +52,14 @@ def _okrugleno(args):
     # [вопрос QWEN 14.11: правило половин] ПИЛОТ-КАНОН: половина вверх
     # (математическое). Питон-round — банковское (2,5 -> 2) и молча бы
     # считал по-другому; фиксируем правило в ВМ нарочно.
-    import math
-    x, n = float(args[0]), int(args[1])
-    koeff = 10 ** n
-    if x >= 0:
-        return math.floor(x * koeff + 0.5) / koeff
-    return -math.floor(-x * koeff + 0.5) / koeff
+    # [v0.1.2, аудит: 1.005*100 = 100.4999… в бинарном float — floor давал
+    # 1.0 вместо 1.01. Decimal от СТРОКОВОГО представления снимает беду;
+    # ROUND_HALF_UP = половина вверх от нуля — тот же канон.]
+    import decimal
+    x = decimal.Decimal(str(float(args[0])))
+    n = int(args[1])
+    koeff = decimal.Decimal(1).scaleb(-n)
+    return float(x.quantize(koeff, rounding=decimal.ROUND_HALF_UP))
 
 
 def _summa(args):
@@ -206,7 +212,13 @@ def vyzhit(expr, env, sdelki):
 def _vyzhit_syr(expr, env, sdelki):
     op = expr.get("оп")
     if op == "константа":
-        return expr["значение"]
+        # [v0.1.2, аудит: мутируемый литерал списка/словаря — общий объект
+        # AST; присоединить мутировал ЕГО между вызовами и сделками.
+        # Чистая функция обязана получать свежую копию.]
+        znach = expr["значение"]
+        if isinstance(znach, (list, dict)):
+            return copy.deepcopy(znach)
+        return znach
     if op == "поле":
         imya = expr["имя"]
         if imya not in env:
@@ -332,6 +344,25 @@ def _polka_chitai_ili_kanon(adres, umolchanie):
 # ── исполнение тела ──
 
 _ГЛУБИНА_ПОТОЛОК = 300   # [2.0 П2] рекурсия зова — под контрактом, не RecursionError
+# [v0.1.2, аудит: цикл до 10^12 вешал расчёт — «топливо» считает шаги тела;
+# лимит на расчёт (сбрасывается на каждом свидетель-кейсе), превышение —
+# канон-отказ. Названо версией v0.1.2.]
+_ТОПЛИВО_ЛИМИТ = 10_000_000
+_топливо = 0
+
+
+def _shag():
+    global _топливо
+    _топливо += 1
+    if _топливо > _ТОПЛИВО_ЛИМИТ:
+        raise DealOtkaz("топливо",
+                        "расчёт израсходовал %d шагов тела — проверь границы циклов"
+                        % _ТОПЛИВО_ЛИМИТ)
+
+
+def _toplivo_sbrodit():
+    global _топливо
+    _топливо = 0
 # запас стека питона поднят, чтобы граница срабатывала КОНТРАКТОМ (счётчик
 # на 300), а спасательной сетью
 sys.setrecursionlimit(3000)
@@ -382,6 +413,7 @@ def vypolnit_telo(telo, env, sdelki):
 
 def _telo_syr(telo, env, sdelki):
     for st in telo:
+        _shag()
         op = st.get("оп")
         if op == "присваивание":
             if "имя" not in st:
@@ -466,9 +498,28 @@ def zov_sdelki(sdelka, argy, sdelki):
 # ── свидетели ──
 
 def _sravnit(polucheno, ozhidaemoe) -> bool:
+    # [v0.1.2, аудит: каст во float делал 1e17+5 «равным» 1e17 — целые
+    # сравниваются ТОЧНО; допуск 1e-9 остаётся для дробных (деньги: копейки) —
+    # названный канон, смягчение float-шума вида 0.1+0.2]
+    if isinstance(ozhidaemoe, bool) or isinstance(polucheno, bool):
+        return polucheno == ozhidaemoe
+    if isinstance(ozhidaemoe, int) and isinstance(polucheno, int):
+        return polucheno == ozhidaemoe   # [v0.1.2] целые — ТОЧНО: float съедает
+                                         # 1e17+5 против 1e17 ещё до сравнения
     if isinstance(ozhidaemoe, (int, float)) and isinstance(polucheno, (int, float)):
-        return abs(float(polucheno) - float(ozhidaemoe)) < 1e-9
+        a, b = float(polucheno), float(ozhidaemoe)
+        if a.is_integer() and b.is_integer():
+            return a == b
+        return abs(a - b) < 1e-9   # дробные: допуск 1e-9 — канон (деньги)
     return polucheno == ozhidaemoe
+
+
+_ТИПЫ = {"число": lambda x: isinstance(x, (int, float)) and not isinstance(x, bool),
+         "строка": lambda x: isinstance(x, str),
+         "список": lambda x: isinstance(x, list),
+         "словарь": lambda x: isinstance(x, dict),
+         "статус": lambda x: isinstance(x, bool),
+         "файл": lambda x: isinstance(x, str)}
 
 
 def gonit_svideteley(sdelka, sdelki) -> dict:
@@ -476,44 +527,71 @@ def gonit_svideteley(sdelka, sdelki) -> dict:
 
     Ступень 1: постусловие «даёт» договора исполняется на КАЖДОМ кейсе
     после тела — несходство красит сделку, даже если кейс сошёлся
-    (двойной суд: тело и договор)."""
+    (двойной суд: тело и договор).
+    [v0.1.2, аудит: типы входов судятся на КАЖДОМ кейсе — свидетель,
+    подающий строку под объявленное число, красный, а не зелёный;
+    топливо сбрасывается на каждом кейсе — расчёт случая сам за себя.]"""
     itogi = []
     daet = sdelka.get("даёт")
     for n, kz in enumerate(sdelka.get("свидетель", []), 1):
+        _toplivo_sbrodit()
         env = dict(kz.get("вход", {}))
-        # ФИКСАТУРА [мина ступени 1: свидетели с состоянием не идемпотентны —
-        # зелёный счётчик стоял на ручном сбросе]. Верификатор сам ставит
-        # полку в заявленное состояние ПЕРЕД исполнением кейса.
-        if kz.get("фиксатура"):
-            for адрес, znach in kz["фиксатура"].items():
-                _polka_zapis_kanon(адрес, znach)   # [П4] и кэш обновляется
-        daet_ok = True
-        try:
-            rez = vypolnit_telo(sdelka.get("тело", []), env, sdelki)
-            polucheno = rez[1] if rez else None
-            if daet and not isinstance(polucheno, tuple):
-                env["это"] = polucheno
-                daet_ok = bool(vyzhit(daet, env, sdelki))
-        except DealOtkaz as otk:
-            polucheno = ("отказ", otk.imya)
-        if "отказ" in kz:
-            shoditsya = isinstance(polucheno, tuple) and polucheno[0] == "отказ" \
-                and polucheno[1] == kz["отказ"]
-            itogi.append({"кейс": n, "ожидали": "отказ %s" % kz["отказ"],
-                          "сошлось": shoditsya})
-        elif "свойство" in kz:
-            # кейс-свойство: результат подаётся в выражение как «это» —
-            # для значений, которые нельзя зафиксировать числом (время, хеш)
-            env["это"] = polucheno
-            shoditsya = (not isinstance(polucheno, tuple)) and \
-                bool(vyzhit(kz["свойство"], env, sdelki)) and daet_ok
-            itogi.append({"кейс": n, "ожидали": "свойство", "получили": polucheno,
-                          "сошлось": shoditsya})
+        for v in sdelka.get("входы", []):
+            if v["имя"] in env:
+                proverka = _ТИПЫ.get(v["тип"])
+                if proverka and not proverka(env[v["имя"]]):
+                    itogi.append({"кейс": n,
+                                  "ожидали": "отказ тии_не_сошлись",
+                                  "получили": ("отказ", "типы_не_сошлись"),
+                                  "сошлось": False,
+                                  "даёт": True,
+                                  "причина": "вход «%s» объявлен %s, а подан %s — правь кейс или вход"
+                                             % (v["имя"], v["тип"], _имя_типа(env[v["имя"]]))})
+                    break
         else:
-            shoditsya = not isinstance(polucheno, tuple) and \
-                _sravnit(polucheno, kz.get("выход")) and daet_ok
-            itogi.append({"кейс": n, "ожидали": kz.get("выход"),
-                          "получили": polucheno, "сошлось": shoditsya,
-                          "даёт": daet_ok})
+            itogi.extend(_gonit_kasey(sdelka, kz, n, env, daet, sdelki))
     vsyo = all(i["сошлось"] for i in itogi)
     return {"сделка": sdelka["имя"], "кейсы": itogi, "зелёная": vsyo}
+
+
+def _gonit_kasey(sdelka, kz, n, env, daet, sdelki):
+    """Тело старого цикла кейса (без вход-типов — они судятся выше)."""
+    itogi = []
+    # ФИКСАТУРА [мина ступени 1: свидетели с состоянием не идемпотентны —
+    # зелёный счётчик стоял на ручном сбросе]. Верификатор сам ставит
+    # полку в заявленное состояние ПЕРЕД исполнением кейса.
+    if kz.get("фиксатура"):
+        for адрес, znach in kz["фиксатура"].items():
+            _polka_zapis_kanon(адрес, znach)   # [П4] и кэш обновляется
+    daet_ok = True
+    prichina = ""
+    try:
+        rez = vypolnit_telo(sdelka.get("тело", []), env, sdelki)
+        polucheno = rez[1] if rez else None
+        if daet and not isinstance(polucheno, tuple):
+            env["это"] = polucheno
+            daet_ok = bool(vyzhit(daet, env, sdelki))
+    except DealOtkaz as otk:
+        polucheno = ("отказ", otk.imya)
+        prichina = otk.prichina   # [v0.1.2: причина отказа доезжает в свод —
+                                  # ИИ исправляет по словам, не по имени]
+    if "отказ" in kz:
+        shoditsya = isinstance(polucheno, tuple) and polucheno[0] == "отказ" \
+            and polucheno[1] == kz["отказ"]
+        itogi.append({"кейс": n, "ожидали": "отказ %s" % kz["отказ"],
+                      "сошлось": shoditsya, "причина": prichina})
+    elif "свойство" in kz:
+        # кейс-свойство: результат подаётся в выражение как «это» —
+        # для значений, которые нельзя зафиксировать числом (время, хеш)
+        env["это"] = polucheno
+        shoditsya = (not isinstance(polucheno, tuple)) and \
+            bool(vyzhit(kz["свойство"], env, sdelki)) and daet_ok
+        itogi.append({"кейс": n, "ожидали": "свойство", "получили": polucheno,
+                      "сошлось": shoditsya})
+    else:
+        shoditsya = not isinstance(polucheno, tuple) and \
+            _sravnit(polucheno, kz.get("выход")) and daet_ok
+        itogi.append({"кейс": n, "ожидали": kz.get("выход"),
+                      "получили": polucheno, "сошлось": shoditsya,
+                      "даёт": daet_ok, "причина": prichina})
+    return itogi

@@ -17,6 +17,7 @@
 генератор пока не проверяет (названо).
 """
 import json
+import re
 
 from deal import vm as dvm
 from deal.vm import DealOtkaz, PRIMITIVY, zov_sdelki, _арифметика, _polka_put
@@ -100,6 +101,16 @@ def _vyr(expr):
     raise DealOtkaz("нет_операции", "выражение с неизвестной операцией «%s»" % op)
 
 
+_IDEN = re.compile(r"^[A-Za-zА-яЁё_][A-Za-z0-9А-яЁё_]*$")
+
+
+def _iden_ok(imya):
+    """[v0.1.2, аудит CWE-94: имя переменной вставляется в генерируемый
+    питон-код сырым — легальные имена канона (латиница/кириллица/цифры/_)
+    проходят, кривые дают канон-отказ, а не SyntaxError наружу.]"""
+    return bool(_IDEN.match(imya or ""))
+
+
 def _gen_telo(telo, otstup, stroki):
     """Генерация тела; пустой блок канона = pass (питон требует непустой)."""
     bilo = len(stroki)
@@ -129,6 +140,10 @@ def _gen_telo(telo, otstup, stroki):
                 _gen_telo(st.get("иначе", []), otstup + "    ", stroki)
         elif op == "для-каждого-до":
             perem = st["переменная"]
+            if not _iden_ok(perem):
+                raise DealOtkaz("нарушен_договор",
+                                "имя переменной цикла «%s» — не идентификатор канона "
+                                "(латиница/кириллица/цифры/_ без кавычек и черточек)" % perem)
             stroki.append("%sfor %s in range(int(%s)):" % (otstup, perem, _vyr(st["до"])))
             stroki.append("%s    env[%s] = %s" % (otstup, repr(perem), perem))
             _gen_telo(st.get("тело", []), otstup + "    ", stroki)

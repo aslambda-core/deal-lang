@@ -15,12 +15,19 @@ LOAD не объявленного — нет_имени; CALL чужого — 
 и глубина — тем же контрактом zov_sdelki. Компиляция ленива (кэш по id тела)
 и детерминированна. Выключатель — vm.РЕЖИМ["байткод"] (выкл = интерпретатор).
 """
+import copy
 import io
 import json
 import os
 
 from deal import vm as dvm
 from deal.vm import DealOtkaz, PRIMITIVY, zov_sdelki, _арифметика, _имя_типа, _polka_put
+
+from deal.vm import _топливо as _топливо_schetchik, _ТОПЛИВО_ЛИМИТ
+
+# [v0.1.2] топливо живёт в vm (один счётчик на расчёт); исполнитель байткода
+# подращивает его по ссылке через vm-переменную
+import deal.vm as _dvm_mod
 
 _КАШ_ТЕЛ = {}
 _КАШ_ВЫР = {}
@@ -166,8 +173,16 @@ def ispolnit(kod, env, sdelki, stack=None):
         if ip >= len(kod):
             return None
         op, arg = kod[ip]
+        # [v0.1.2, аудит: топливо — каждый шаг инструкции считает; расчёт
+        # без выхода получает канон-отказ «топливо», не вечный цикл]
+        _dvm_mod._топливо += 1
+        if _dvm_mod._топливо > _dvm_mod._ТОПЛИВО_ЛИМИТ:
+            raise DealOtkaz("топливо",
+                            "расчёт израсходовал %d шагов — проверь границы циклов"
+                            % _dvm_mod._ТОПЛИВО_ЛИМИТ)
         if op == "PUSH":
-            stack.append(arg)
+            # [v0.1.2, аудит: мутируемый литерал — копия, как в интерпретаторе]
+            stack.append(copy.deepcopy(arg) if isinstance(arg, (list, dict)) else arg)
         elif op == "LOAD":
             if arg not in env:
                 raise DealOtkaz("нет_имени",

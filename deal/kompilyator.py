@@ -35,7 +35,9 @@ class Otkaz(Exception):
 
 
 KANON_OTKAZY = {"деление_на_ноль", "нарушен_договор", "полка_не_доступна",
-                "нет_договора", "нет_имени", "нет_операции", "полка_наружу"}
+                "нет_договора", "нет_имени", "нет_операции", "полка_наружу",
+                "типы_не_сошлись", "за_краем", "глубина",
+                "топливо"}  # [v0.1.2: канон-список выровнен с ВМ]
 
 
 def _sdelki_fayla(ast: dict) -> dict:
@@ -222,21 +224,38 @@ def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
             fh.write(json.dumps(obekt, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
+    """[v0.1.2, аудит: «РЕЕСТР — что отвергнуто» был словами; отказ
+    компилятора пишется в реестр — отвергнутое не исчезает.]"""
+    zapis = {"kogda": time.time(), "kto": "otkaz", "tip": "otkaz",
+             "stad": stad, "vinovnik": vinovnik, "prichina": prichina,
+             "chto": chto, "fajl": os.path.basename(put_fayla)}
+    with io.open(REESTR, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(zapis, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def sobrat(put_fayla: str, kto: str = "пилот") -> dict:
     """Полный цикл: файл .deal → суд всех стадий → реестр. Наружу — свод."""
-    ast = dast.zagruzit(put_fayla)
-    stadija_1_2(ast)
-    sdelki = sdelki_dlya(ast, put_fayla)
-    stadija_3(ast, sdelki)
-    svody = stadija_4(ast, sdelki)
-    hesh = stadija_5(ast)
-    if not all(s["зелёная"] for s in svody):
-        ploho = [s for s in svody if not s["зелёная"]][0]
-        raise Otkaz(4, "сделка %s" % ploho["сделка"],
-                    "кейс не сошёлся: %s" % json.dumps(
-                        [k for k in ploho["кейсы"] if not k["сошлось"]][0],
-                        ensure_ascii=False),
-                    "правь тело или кейс — исполни и сравни руками")
+    try:
+        ast = dast.zagruzit(put_fayla)
+        stadija_1_2(ast)
+        sdelki = sdelki_dlya(ast, put_fayla)
+        stadija_3(ast, sdelki)
+        svody = stadija_4(ast, sdelki)
+        hesh = stadija_5(ast)
+        if not all(s["зелёная"] for s in svody):
+            ploho = [s for s in svody if not s["зелёная"]][0]
+            raise Otkaz(4, "сделка %s" % ploho["сделка"],
+                        "кейс не сошёлся: %s" % json.dumps(
+                            [k for k in ploho["кейсы"] if not k["сошлось"]][0],
+                            ensure_ascii=False),
+                        "правь тело или кейс — исполни и сравни руками")
+    except Otkaz as otk:
+        _otkaz_v_reestr(otk.stad, otk.vinovnik, otk.prichina, otk.chto, put_fayla)
+        raise
+    except dvm.DealOtkaz as otk:
+        _otkaz_v_reestr(0, "исполнение", otk.imya, otk.prichina, put_fayla)
+        raise
     stadija_6_7(ast, hesh, svody, kto)
     return {"hesh": hesh, "svody": svody, "proekciya": dast.projekciya(ast)}
 
