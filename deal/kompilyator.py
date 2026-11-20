@@ -246,7 +246,20 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("зов: python deal/kompilyator.py <файл.deal>")
         raise SystemExit(2)
-    itog = sobrat(sys.argv[1], kto="ruki")
+    try:
+        itog = sobrat(sys.argv[1], kto="ruki")
+    except Otkaz as otk:
+        # отказ компилятора — словами, а не traceback: виновник, причина, что править
+        print(json.dumps({"стадия": otk.stad, "виновник": otk.vinovnik,
+                          "причина": otk.prichina, "что_править": otk.chto},
+                         ensure_ascii=False))
+        raise SystemExit(1)
+    except dvm.DealOtkaz as otk:
+        print(json.dumps({"стадия": 4, "виновник": "исполнение свидетеля",
+                          "причина": otk.imya + (" — " + otk.prichina if otk.prichina else ""),
+                          "что_править": "назови отказ в договоре или исправь тело/кейс"},
+                         ensure_ascii=False))
+        raise SystemExit(1)
     print(json.dumps({"hesh": itog["hesh"][:16],
                       "sdelki": [(s["сделка"], s["зелёная"]) for s in itog["svody"]]},
                      ensure_ascii=False))

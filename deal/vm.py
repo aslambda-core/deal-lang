@@ -273,7 +273,8 @@ def _vyzhit_syr(expr, env, sdelki):
 def _polka_put(adres: str) -> str:
     """Файлы полки живут ТОЛЬКО под polka/ — наружу нельзя (граница пилота)."""
     put = os.path.normpath(os.path.join(POLKA, str(adres)))
-    if not put.startswith(os.path.normpath(POLKA)):
+    granica = os.path.normpath(POLKA)
+    if not (put == granica or put.startswith(granica + os.sep)):
         raise DealOtkaz("полка_наружу", "адрес полки вылез за границу песка")
     return put
 
