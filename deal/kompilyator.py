@@ -12,9 +12,16 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# [v0.2.0, мина 3.14: каталог deal/ в sys.path затенял stdlib ast (наш
+# ast.py) — цепочка concurrent.futures->logging->ast падала; каталог
+# модуля из пути убирается, пакет резолвится только через корень]
+_наш_каталог = os.path.dirname(os.path.abspath(__file__))
+_корень = os.path.dirname(_наш_каталог)
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _наш_каталог]
+sys.path.insert(0, _корень)
 
 from deal import ast as dast
+from deal import kesh as dkesh
 from deal import vm as dvm
 
 REESTR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -167,23 +174,67 @@ def stadija_3(ast: dict, sdelki=None):
         _proverit_telo(s.get("тело", []), s["имя"], izvestnye, 3, obyavleno, sdelki)
 
 
-def stadija_4(ast: dict, sdelki=None) -> list:
+def _parall_rabochiy(zadanie):
+    """[v0.2.0] Воркер пула: гонит свидетелей одной сделки в своём процессе
+    (обход GIL, изоляция падения). Отказ ВМ возвращается словами —
+    в родителе поднимается теми же словами, что и при серийном прогоне."""
+    sdelka, sdelki = zadanie
+    try:
+        return ("ok", dvm.gonit_svideteley(sdelka, sdelki))
+    except dvm.DealOtkaz as otk:
+        return ("otkaz", otk.imya, otk.prichina)
+
+
+def stadija_4(ast: dict, sdelki=None, parall: bool = False, kesh: bool = True) -> list:
     """Свидетели: исполнение в ВМ + скрытые края ступени 1.
 
     Для каждого числового входа компилятор подставляет край 0 и край
     1 000 000: сделка обязана ответить каноническим отказом (названным
     в договоре) либо осмысленным числом — непредсказуемый крах красит
-    сделку [урок заданника: края обязательны в обеих половинах]."""
+    сделку [урок заданника: края обязательны в обеих половинах].
+
+    [v0.2.0: вердикты сделок без полки в транзитивном замыкании зова
+    кешируются в .deal_kesh/ — смена ВМ или ввозов инвалидирует сама
+    (хеш vm.py в ключе); --parall гонит сделки в пуле процессов.]"""
     sdelki = sdelki if sdelki is not None else _sdelki_fayla(ast)
-    svody = []
+    sdelki_fayla = ast["сделки"]
+    svody = [None] * len(sdelki_fayla)
+    k_rabote = []
+    for i, s in enumerate(sdelki_fayla):
+        verd = None
+        if kesh and dkesh.polka_chistaya(s, sdelki):
+            verd = dkesh.chitat(dkesh.klyuch_svoda(s, sdelki), ("svod",))
+        if verd is not None:
+            svody[i] = verd["svod"]
+        else:
+            k_rabote.append(i)
+    if k_rabote:
+        if parall and len(k_rabote) > 1:
+            from concurrent.futures import ProcessPoolExecutor  # только при пуле
+            with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as pul:
+                for i, itog in zip(k_rabote,
+                                   pul.map(_parall_rabochiy,
+                                           [(sdelki_fayla[i], sdelki) for i in k_rabote])):
+                    if itog[0] == "otkaz":
+                        raise Otkaz(4, "сделка %s" % sdelki_fayla[i]["имя"],
+                                    "свидетель упал отказом «%s»: %s" % (itog[1], itog[2]),
+                                    "назови отказ в договоре или исправь тело/кейс")
+                    svody[i] = itog[1]
+        else:
+            for i in k_rabote:
+                try:
+                    svody[i] = dvm.gonit_svideteley(sdelki_fayla[i], sdelki)
+                except dvm.DealOtkaz as otk:
+                    raise Otkaz(4, "сделка %s" % sdelki_fayla[i]["имя"],
+                                "свидетель упал отказом «%s»: %s" % (otk.imya, otk.prichina),
+                                "назови отказ в договоре или исправь тело/кейс")
+        if kesh:
+            for i in k_rabote:
+                if dkesh.polka_chistaya(sdelki_fayla[i], sdelki):
+                    dkesh.pisat(dkesh.klyuch_svoda(sdelki_fayla[i], sdelki), {"svod": svody[i]})
     for s in ast["сделки"]:
-        try:
-            svody.append(dvm.gonit_svideteley(s, sdelki))
-        except dvm.DealOtkaz as otk:
-            raise Otkaz(4, "сделка %s" % s["имя"],
-                        "свидетель упал отказом «%s»: %s" % (otk.imya, otk.prichina),
-                        "назови отказ в договоре или исправь тело/кейс")
-    for s in ast["сделки"]:
+        chist = kesh and dkesh.polka_chistaya(s, sdelki)
+        baza = dkesh.klyuch_svoda(s, sdelki) if chist else None
         chislennye = [v["имя"] for v in s.get("входы", []) if v.get("тип") == "число"]
         for imya in chislennye:
             for kraj in (0, 1000000):
@@ -193,18 +244,42 @@ def stadija_4(ast: dict, sdelki=None) -> list:
                 trebuet = s.get("требует")
                 if trebuet and not dvm.vyzhit(trebuet, env_full, sdelki):
                     continue  # требует отсёк край — канонический отказ нарушен_договор
-                try:
-                    dvm.vypolnit_telo(s.get("тело", []), dict(env), sdelki)
-                except dvm.DealOtkaz as otk:
-                    if otk.imya not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
+                # [v0.2.0, мина: проба края наследовала счётчик топлива после
+                # свидетелей — вердикт зависел от порядка прогонов; дисциплина
+                # ВМ «топливо сбрасывается на каждом кейсе» распространена на
+                # пробы — вердикт пробы сам за себя]
+                dvm._toplivo_sbrodit()
+                verd = dkesh.chitat(dkesh.klyuch_kraya(baza, imya, kraj),
+                                    ("tip", "imya", "beda")) if chist else None
+                if verd is None:
+                    try:
+                        dvm.vypolnit_telo(s.get("тело", []), dict(env), sdelki)
+                        verd = {"tip": "ok", "imya": "", "beda": ""}
+                    except dvm.DealOtkaz as otk:
+                        verd = {"tip": "otkaz", "imya": otk.imya, "beda": ""}
+                        if otk.imya not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
+                            raise Otkaz(4, "сделка %s" % s["имя"],
+                                        "скрытый край %s=%d упал отказом «%s», не названным "
+                                        "в договоре" % (imya, kraj, otk.imya),
+                                        "добавь отказ в договор или огради вход требует-ом")
+                    except (TypeError, ValueError, ZeroDivisionError, KeyError) as beda:
+                        verd = {"tip": "beda", "imya": "",
+                                "beda": "%s: %s" % (type(beda).__name__, str(beda)[:80])}
                         raise Otkaz(4, "сделка %s" % s["имя"],
-                                    "скрытый край %s=%d упал отказом «%s», не названным "
-                                    "в договоре" % (imya, kraj, otk.imya),
-                                    "добавь отказ в договор или огради вход требует-ом")
-                except (TypeError, ValueError, ZeroDivisionError, KeyError) as beda:
+                                    "скрытый край %s=%d роняет тело: %s: %s"
+                                    % (imya, kraj, type(beda).__name__, str(beda)[:80]),
+                                    "огради вход требует-ом или обработай в теле")
+                    if chist:
+                        dkesh.pisat(dkesh.klyuch_kraya(baza, imya, kraj), verd)
+                elif verd["tip"] == "otkaz" and verd["imya"] not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
                     raise Otkaz(4, "сделка %s" % s["имя"],
-                                "скрытый край %s=%d роняет тело: %s: %s"
-                                % (imya, kraj, type(beda).__name__, str(beda)[:80]),
+                                "скрытый край %s=%d упал отказом «%s», не названным "
+                                "в договоре" % (imya, kraj, verd["imya"]),
+                                "добавь отказ в договор или огради вход требует-ом")
+                elif verd["tip"] == "beda":
+                    raise Otkaz(4, "сделка %s" % s["имя"],
+                                "скрытый край %s=%d роняет тело: %s"
+                                % (imya, kraj, verd["beda"]),
                                 "огради вход требует-ом или обработай в теле")
     return svody
 
@@ -269,14 +344,18 @@ def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
         fh.write(json.dumps(zapis, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def sobrat(put_fayla: str, kto: str = "пилот") -> dict:
-    """Полный цикл: файл .deal → суд всех стадий → реестр. Наружу — свод."""
+def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
+           kesh: bool = True) -> dict:
+    """Полный цикл: файл .deal → суд всех стадий → реестр. Наружу — свод.
+    [v0.2.0: kesh — вердикты чистых сделок из .deal_kesh/; parall — пул
+    процессов на свидетелей. Верификация (ввозы по хешу, статика) не
+    пропускается никогда — кешируется только исполнение.]"""
     try:
         ast = dast.zagruzit(put_fayla)
         stadija_1_2(ast)
         sdelki = sdelki_dlya(ast, put_fayla)
         stadija_3(ast, sdelki)
-        svody = stadija_4(ast, sdelki)
+        svody = stadija_4(ast, sdelki, parall=parall, kesh=kesh)
         hesh = stadija_5(ast)
         if not all(s["зелёная"] for s in svody):
             ploho = [s for s in svody if not s["зелёная"]][0]
@@ -297,11 +376,15 @@ def sobrat(put_fayla: str, kto: str = "пилот") -> dict:
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) < 2:
-        print("зов: python deal/kompilyator.py <файл.deal>")
+    argv = list(sys.argv[1:])
+    parall = "--parall" in argv          # [v0.2.0] пул процессов на свидетелей
+    kesh = "--bez-kesh" not in argv      # [v0.2.0] кеш вердиктов включён по умолчанию
+    argv = [a for a in argv if not a.startswith("--")]
+    if not argv:
+        print("зов: python deal/kompilyator.py <файл.deal> [--parall] [--bez-kesh]")
         raise SystemExit(2)
     try:
-        itog = sobrat(sys.argv[1], kto="ruki")
+        itog = sobrat(argv[0], kto="ruki", parall=parall, kesh=kesh)
     except Otkaz as otk:
         # отказ компилятора — словами, а не traceback: виновник, причина, что править
         print(json.dumps({"стадия": otk.stad, "виновник": otk.vinovnik,
