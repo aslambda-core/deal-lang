@@ -1,5 +1,7 @@
 # производственные артефакты компиляции — не паблик
 __pycache__/
 .deal_kesh/
+.deal_kesh_slovo
+.deal_letopis_golova
 reestr.jsonl
 letopis.jsonl

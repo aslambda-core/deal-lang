@@ -5,6 +5,7 @@
 6 летопись · 7 реестр · 8 выдача. Отказ — всегда словами:
 {стадия, виновник, причина, что_править}.
 """
+import copy
 import hashlib
 import io
 import json
@@ -185,7 +186,55 @@ def _parall_rabochiy(zadanie):
         return ("otkaz", otk.imya, otk.prichina)
 
 
-def stadija_4(ast: dict, sdelki=None, parall: bool = False, kesh: bool = True) -> list:
+def _kanon_json(x) -> str:
+    """Канон-строка для сверки вердиктов (сверка байт-в-байт по словам)."""
+    return json.dumps(x, ensure_ascii=False, sort_keys=True)
+
+
+def _izmena_v_reestr(klyuch: str, prichina: str):
+    """[v0.2.1, аудит: кеш — ускоритель с проверкой; измена (подделка,
+    порча, устаревание записи) не молчит — пишется в реестр словами.]"""
+    zapis = {"kogda": time.time(), "kto": "kesh-izmena", "klyuch": klyuch,
+             "prichina": prichina}
+    try:
+        with io.open(REESTR, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(zapis, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _spot_proba(kesh_proba: int) -> bool:
+    """True — это попадание кеша перепроверяется живым счётом.
+    Выбор случайный на каждый прогон (os.urandom) — подделщик не может
+    выбрать ключ, который никогда не проверяется. kesh_proba=1 — всегда,
+    0 или меньше — никогда."""
+    if not kesh_proba or kesh_proba < 1:
+        return False
+    return int.from_bytes(os.urandom(4), "big") % kesh_proba == 0
+
+
+def _proba_odna(s: dict, env: dict, sdelki: dict, imya: str, kraj: int) -> dict:
+    """Один краевой прогон: {tip, imya, beda}. Безымянный отказ и падение
+    тела — Otkaz наружу (как и в свежем счёте), такие вердикты не кешируются."""
+    try:
+        dvm.vypolnit_telo(s.get("тело", []), dict(env), sdelki)
+        return {"tip": "ok", "imya": "", "beda": ""}
+    except dvm.DealOtkaz as otk:
+        if otk.imya not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
+            raise Otkaz(4, "сделка %s" % s["имя"],
+                        "скрытый край %s=%d упал отказом «%s», не названным "
+                        "в договоре" % (imya, kraj, otk.imya),
+                        "добавь отказ в договор или огради вход требует-ом")
+        return {"tip": "otkaz", "imya": otk.imya, "beda": ""}
+    except (TypeError, ValueError, ZeroDivisionError, KeyError) as beda:
+        raise Otkaz(4, "сделка %s" % s["имя"],
+                    "скрытый край %s=%d роняет тело: %s: %s"
+                    % (imya, kraj, type(beda).__name__, str(beda)[:80]),
+                    "огради вход требует-ом или обработай в теле")
+
+
+def stadija_4(ast: dict, sdelki=None, parall: bool = False, kesh: bool = True,
+              kesh_proba: int = 16) -> list:
     """Свидетели: исполнение в ВМ + скрытые края ступени 1.
 
     Для каждого числового входа компилятор подставляет край 0 и край
@@ -193,57 +242,113 @@ def stadija_4(ast: dict, sdelki=None, parall: bool = False, kesh: bool = True) -
     в договоре) либо осмысленным числом — непредсказуемый крах красит
     сделку [урок заданника: края обязательны в обеих половинах].
 
-    [v0.2.0: вердикты сделок без полки в транзитивном замыкании зова
-    кешируются в .deal_kesh/ — смена ВМ или ввозов инвалидирует сама
-    (хеш vm.py в ключе); --parall гонит сделки в пуле процессов.]"""
+    [v0.2.0: вердикты чистых сделок кешируются в .deal_kesh/;
+    --parall гонит сделки в пуле процессов.]
+    [v0.2.1, шестой аудит: попадание кеша выборочно переисполняется
+    (_spot_proba) — подделка/устаревание ловится, запись стирается,
+    вердикт пересчитывается, измена пишется в реестр; полочные сделки
+    в пул не идут — фиксатуры соседей по полке не перемежаются;
+    проба края получает ВСЕ входы (нечисловые — из собственного кейса
+    сделки, без кейса — нуль типа): раньше тело ловило нет_имени, а
+    требует на нечисловое имя ронял пробу — легальная сделка не
+    компилилась.]"""
     sdelki = sdelki if sdelki is not None else _sdelki_fayla(ast)
     sdelki_fayla = ast["сделки"]
     svody = [None] * len(sdelki_fayla)
     k_rabote = []
     for i, s in enumerate(sdelki_fayla):
         verd = None
-        if kesh and dkesh.polka_chistaya(s, sdelki):
-            verd = dkesh.chitat(dkesh.klyuch_svoda(s, sdelki), ("svod",))
-        if verd is not None:
+        klyuch = None
+        if kesh and dkesh.chistaya(s, sdelki):
+            klyuch = dkesh.klyuch_svoda(s, sdelki)
+            verd = dkesh.chitat(klyuch, ("svod",))
+        if verd is not None and _spot_proba(kesh_proba):
+            # попадание перепроверяется живым счётом
+            try:
+                zhivoy = dvm.gonit_svideteley(sdelki_fayla[i], sdelki)
+            except dvm.DealOtkaz as otk:
+                dkesh.udalit(klyuch)
+                _izmena_v_reestr(klyuch, "живой счёт упал отказом «%s», "
+                                         "запись кеша стёрта" % otk.imya)
+                raise Otkaz(4, "сделка %s" % s["имя"],
+                            "свидетель упал отказом «%s»: %s" % (otk.imya, otk.prichina),
+                            "назови отказ в договоре или исправь тело/кейс")
+            if _kanon_json(zhivoy) != _kanon_json(verd["svod"]):
+                dkesh.udalit(klyuch)
+                _izmena_v_reestr(klyuch, "переисполнение не сошлось с записью — "
+                                         "запись стёрта, вердикт пересчитан")
+            svody[i] = zhivoy
+        elif verd is not None:
             svody[i] = verd["svod"]
         else:
             k_rabote.append(i)
     if k_rabote:
-        if parall and len(k_rabote) > 1:
+        # полочные сделки не идут в пул: их фиксатуры на полке не должны
+        # перемежаться — порядок полочного счёта всегда серийный
+        chistye_rabote = [i for i in k_rabote if dkesh.chistaya(sdelki_fayla[i], sdelki)]
+        polochnye_rabote = [i for i in k_rabote if not dkesh.chistaya(sdelki_fayla[i], sdelki)]
+        if parall and len(chistye_rabote) > 1:
             from concurrent.futures import ProcessPoolExecutor  # только при пуле
             with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as pul:
-                for i, itog in zip(k_rabote,
+                for i, itog in zip(chistye_rabote,
                                    pul.map(_parall_rabochiy,
-                                           [(sdelki_fayla[i], sdelki) for i in k_rabote])):
+                                           [(sdelki_fayla[i], sdelki) for i in chistye_rabote])):
                     if itog[0] == "otkaz":
                         raise Otkaz(4, "сделка %s" % sdelki_fayla[i]["имя"],
                                     "свидетель упал отказом «%s»: %s" % (itog[1], itog[2]),
                                     "назови отказ в договоре или исправь тело/кейс")
                     svody[i] = itog[1]
         else:
-            for i in k_rabote:
+            for i in chistye_rabote:
                 try:
                     svody[i] = dvm.gonit_svideteley(sdelki_fayla[i], sdelki)
                 except dvm.DealOtkaz as otk:
                     raise Otkaz(4, "сделка %s" % sdelki_fayla[i]["имя"],
                                 "свидетель упал отказом «%s»: %s" % (otk.imya, otk.prichina),
                                 "назови отказ в договоре или исправь тело/кейс")
+        for i in polochnye_rabote:
+            try:
+                svody[i] = dvm.gonit_svideteley(sdelki_fayla[i], sdelki)
+            except dvm.DealOtkaz as otk:
+                raise Otkaz(4, "сделка %s" % sdelki_fayla[i]["имя"],
+                            "свидетель упал отказом «%s»: %s" % (otk.imya, otk.prichina),
+                            "назови отказ в договоре или исправь тело/кейс")
         if kesh:
             for i in k_rabote:
-                if dkesh.polka_chistaya(sdelki_fayla[i], sdelki):
+                if dkesh.chistaya(sdelki_fayla[i], sdelki):
                     dkesh.pisat(dkesh.klyuch_svoda(sdelki_fayla[i], sdelki), {"svod": svody[i]})
     for s in ast["сделки"]:
-        chist = kesh and dkesh.polka_chistaya(s, sdelki)
+        chist = kesh and dkesh.chistaya(s, sdelki)
         baza = dkesh.klyuch_svoda(s, sdelki) if chist else None
-        chislennye = [v["имя"] for v in s.get("входы", []) if v.get("тип") == "число"]
+        vhody = s.get("входы", [])
+        chislennye = [v["имя"] for v in vhody if v.get("тип") == "число"]
+        # [v0.2.1] нечисловые входы в пробе не выбрасываются: значение —
+        # из собственного кейса сделки (кейсы зелёной сделки удовлетворяют
+        # её требует), без кейса — нуль типа
+        ne_chislennye = [v for v in vhody if v.get("тип") != "число"]
+        nuli_tipov = {"строка": "", "список": [], "словарь": {}, "статус": False,
+                      "файл": ""}
+        iz_keysa = {}
+        for kz in s.get("свидетель", []):
+            for v in ne_chislennye:
+                if v["имя"] not in iz_keysa and v["имя"] in kz.get("вход", {}):
+                    iz_keysa[v["имя"]] = copy.deepcopy(kz["вход"][v["имя"]])
         for imya in chislennye:
             for kraj in (0, 1000000):
                 env = {v["имя"]: (kraj if v["имя"] == imya else 1)
-                       for v in s.get("входы", []) if v.get("тип") == "число"}
+                       for v in vhody if v.get("тип") == "число"}
+                for v in ne_chislennye:
+                    env[v["имя"]] = iz_keysa.get(v["имя"],
+                                                 nuli_tipov.get(v.get("тип"), ""))
                 env_full = dict(env)
                 trebuet = s.get("требует")
-                if trebuet and not dvm.vyzhit(trebuet, env_full, sdelki):
-                    continue  # требует отсёк край — канонический отказ нарушен_договор
+                if trebuet:
+                    try:
+                        ok_treb = dvm.vyzhit(trebuet, env_full, sdelki)
+                    except dvm.DealOtkaz:
+                        ok_treb = False  # требует не взялся на пробном env — край отсечён
+                    if not ok_treb:
+                        continue  # требует отсёк край — канонический отказ нарушен_договор
                 # [v0.2.0, мина: проба края наследовала счётчик топлива после
                 # свидетелей — вердикт зависел от порядка прогонов; дисциплина
                 # ВМ «топливо сбрасывается на каждом кейсе» распространена на
@@ -251,27 +356,19 @@ def stadija_4(ast: dict, sdelki=None, parall: bool = False, kesh: bool = True) -
                 dvm._toplivo_sbrodit()
                 verd = dkesh.chitat(dkesh.klyuch_kraya(baza, imya, kraj),
                                     ("tip", "imya", "beda")) if chist else None
-                if verd is None:
-                    try:
-                        dvm.vypolnit_telo(s.get("тело", []), dict(env), sdelki)
-                        verd = {"tip": "ok", "imya": "", "beda": ""}
-                    except dvm.DealOtkaz as otk:
-                        verd = {"tip": "otkaz", "imya": otk.imya, "beda": ""}
-                        if otk.imya not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
-                            raise Otkaz(4, "сделка %s" % s["имя"],
-                                        "скрытый край %s=%d упал отказом «%s», не названным "
-                                        "в договоре" % (imya, kraj, otk.imya),
-                                        "добавь отказ в договор или огради вход требует-ом")
-                    except (TypeError, ValueError, ZeroDivisionError, KeyError) as beda:
-                        verd = {"tip": "beda", "imya": "",
-                                "beda": "%s: %s" % (type(beda).__name__, str(beda)[:80])}
-                        raise Otkaz(4, "сделка %s" % s["имя"],
-                                    "скрытый край %s=%d роняет тело: %s: %s"
-                                    % (imya, kraj, type(beda).__name__, str(beda)[:80]),
-                                    "огради вход требует-ом или обработай в теле")
+                if verd is not None and _spot_proba(kesh_proba):
+                    zhivoy = _proba_odna(s, env, sdelki, imya, kraj)
+                    if _kanon_json(zhivoy) != _kanon_json(verd):
+                        dkesh.udalit(dkesh.klyuch_kraya(baza, imya, kraj))
+                        _izmena_v_reestr(dkesh.klyuch_kraya(baza, imya, kraj),
+                                         "краевая проба не сошлась с записью — "
+                                         "запись стёрта, вердикт пересчитан")
+                    verd = zhivoy
+                elif verd is None:
+                    verd = _proba_odna(s, env, sdelki, imya, kraj)
                     if chist:
                         dkesh.pisat(dkesh.klyuch_kraya(baza, imya, kraj), verd)
-                elif verd["tip"] == "otkaz" and verd["imya"] not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
+                if verd["tip"] == "otkaz" and verd["imya"] not in set(s.get("отказы", [])) | dvm.KANON_OTKAZY:
                     raise Otkaz(4, "сделка %s" % s["имя"],
                                 "скрытый край %s=%d упал отказом «%s», не названным "
                                 "в договоре" % (imya, kraj, verd["imya"]),
@@ -288,29 +385,88 @@ def stadija_5(ast: dict) -> str:
     return dast.hesh(ast)
 
 
-def _pred_hesh_letopisi() -> str:
-    """[v0.1.3, аудит: хеш-цепочка — каждая запись несёт хеш предыдущей;
-    укорачивание ломает цепь — «нельзя укоротить» становится проверяемым.]"""
+YAKOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".deal_letopis_golova")
+
+
+def _chitat_yakor() -> str:
+    try:
+        with io.open(YAKOR, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _pisat_yakor(golova: str):
+    try:
+        with io.open(YAKOR, "w", encoding="utf-8") as fh:
+            fh.write(golova)
+    except OSError:
+        pass
+
+
+def _proverit_letopis() -> str:
+    """[v0.1.3: хеш-цепочка — каждая запись несёт хеш предыдущей.]
+    [v0.2.1, аудит: цепочка ПИСАЛАСЬ, но не проверялась — хвостовое
+    укорачивание с дописыванием самосогласовано, «нельзя укоротить»
+    не enforced. Теперь две проверки при каждой компиляции:
+    (1) каждая запись перепроверяется — хеш записи и связь с предыдущей;
+    (2) голова сверяется с якорем прошлой компиляции
+    (.deal_letopis_golova) — укорачивание хвоста обнаруживается.
+    Возврат — голова цепи ("" для пустой летописи).]"""
     if not os.path.exists(LETOPIS):
+        yakor = _chitat_yakor()
+        if yakor:
+            raise Otkaz(6, "летопись",
+                        "файла letopis.jsonl нет, а якорь головы есть («%s…») — "
+                        "летопись укорочена до нуля" % yakor[:16],
+                        "восстанови letopis.jsonl из внешней копии или удали якорь "
+                        ".deal_letopis_golova осознанно")
         return ""
     pred = ""
+    golova = ""
+    nomer = 0
     with io.open(LETOPIS, encoding="utf-8") as fh:
         for stroka in fh:
             stroka = stroka.strip()
             if not stroka:
                 continue
+            nomer += 1
             try:
-                pred = json.loads(stroka).get("hesh_zapisi", pred)
+                zapis = json.loads(stroka)
             except ValueError:
-                pass
-    return pred
+                raise Otkaz(6, "летопись",
+                            "запись %d не разобралась как JSON" % nomer,
+                            "летопись append-only — строка искажена; "
+                            "восстанови из внешней копии")
+            sohran = zapis.pop("hesh_zapisi", None)
+            if not sohran or dast.hesh(json.dumps(zapis, ensure_ascii=False,
+                                                  sort_keys=True)) != sohran:
+                raise Otkaz(6, "летопись",
+                            "запись %d: хеш записи не сходится" % nomer,
+                            "летопись искажена — восстанови из внешней копии")
+            if zapis.get("pred") != pred:
+                raise Otkaz(6, "летопись",
+                            "запись %d: связь с предыдущей порвана" % nomer,
+                            "летопись укорочена или искажена — "
+                            "восстанови из внешней копии")
+            pred = sohran
+    golova = pred
+    yakor = _chitat_yakor()
+    if yakor and yakor != golova:
+        raise Otkaz(6, "летопись",
+                    "голова цепи «%s…» не равна якорю прошлой компиляции «%s…» — "
+                    "хвост укорочен" % (golova[:16], yakor[:16]),
+                    "восстанови letopis.jsonl из внешней копии или удали якорь "
+                    ".deal_letopis_golova осознанно")
+    return golova
 
 
 def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
-    """Летопись (нельзя укоротить) + реестр (хеш → компонент).
+    """Летопись (нельзя укоротить — теперь и ПРОВЕРЯЕТСЯ) + реестр (хеш → компонент).
     [v0.1.3, аудит: хеш уже в реестре — лёгкая запись без полного AST;
     append-only реестр не раздувается дублями.]"""
-    pred = _pred_hesh_letopisi()
+    pred = _proverit_letopis()
     zapis = {"kogda": time.time(), "kto": kto, "hesh": hesh, "pred": pred,
              "sdelki": [s["имя"] for s in ast.get("сделки", [])],
              "zelenye": sum(1 for s in svody if s["зелёная"]),
@@ -332,6 +488,7 @@ def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
     for put, obekt in ((LETOPIS, zapis), (REESTR, reestr_zapis)):
         with io.open(put, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(obekt, ensure_ascii=False, sort_keys=True) + "\n")
+    _pisat_yakor(zapis["hesh_zapisi"])   # [v0.2.1] якорь головы для следующей проверки
 
 
 def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
@@ -345,17 +502,20 @@ def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
 
 
 def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
-           kesh: bool = True) -> dict:
+           kesh: bool = True, kesh_proba: int = 16) -> dict:
     """Полный цикл: файл .deal → суд всех стадий → реестр. Наружу — свод.
     [v0.2.0: kesh — вердикты чистых сделок из .deal_kesh/; parall — пул
     процессов на свидетелей. Верификация (ввозы по хешу, статика) не
-    пропускается никогда — кешируется только исполнение.]"""
+    пропускается никогда — кешируется только исполнение.]
+    [v0.2.1: kesh_proba — доля переисполнения попаданий кеша (1 из N;
+    0 — выключить, 1 — проверять каждое попадание).]"""
     try:
         ast = dast.zagruzit(put_fayla)
         stadija_1_2(ast)
         sdelki = sdelki_dlya(ast, put_fayla)
         stadija_3(ast, sdelki)
-        svody = stadija_4(ast, sdelki, parall=parall, kesh=kesh)
+        svody = stadija_4(ast, sdelki, parall=parall, kesh=kesh,
+                          kesh_proba=kesh_proba)
         hesh = stadija_5(ast)
         if not all(s["зелёная"] for s in svody):
             ploho = [s for s in svody if not s["зелёная"]][0]
@@ -379,12 +539,28 @@ if __name__ == "__main__":
     argv = list(sys.argv[1:])
     parall = "--parall" in argv          # [v0.2.0] пул процессов на свидетелей
     kesh = "--bez-kesh" not in argv      # [v0.2.0] кеш вердиктов включён по умолчанию
+    # [v0.2.1] доля переисполнения попаданий кеша: 1 из N (умолчание 16);
+    # --kesh-proba 0 — никогда, --kesh-proba 1 — каждое попадание
+    kesh_proba = 16
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--kesh-proba" and i + 1 < len(argv):
+            kesh_proba = int(argv[i + 1])
+            del argv[i:i + 2]
+        elif a.startswith("--kesh-proba="):
+            kesh_proba = int(a.split("=", 1)[1])
+            del argv[i]
+        else:
+            i += 1
     argv = [a for a in argv if not a.startswith("--")]
     if not argv:
-        print("зов: python deal/kompilyator.py <файл.deal> [--parall] [--bez-kesh]")
+        print("зов: python deal/kompilyator.py <файл.deal> [--parall] [--bez-kesh] "
+              "[--kesh-proba N]")
         raise SystemExit(2)
     try:
-        itog = sobrat(argv[0], kto="ruki", parall=parall, kesh=kesh)
+        itog = sobrat(argv[0], kto="ruki", parall=parall, kesh=kesh,
+                      kesh_proba=kesh_proba)
     except Otkaz as otk:
         # отказ компилятора — словами, а не traceback: виновник, причина, что править
         print(json.dumps({"стадия": otk.stad, "виновник": otk.vinovnik,
