@@ -5,3 +5,4 @@ __pycache__/
 .deal_letopis_golova
 reestr.jsonl
 letopis.jsonl
+*.zamok

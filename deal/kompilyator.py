@@ -389,6 +389,82 @@ YAKOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                      ".deal_letopis_golova")
 
 
+class _Zamok:
+    """Сторож-замок для append-журналов [v0.3.0]: лочится БАЙТ 0 ОТДЕЛЬНОГО
+    сторож-файла <журнал>.zamok — один и тот же байт для всех писцов, на весь
+    read-think-append. Две мины, пойманные пробой гонки v0.3.0:
+    (1) замок только на write не спасает — два писца читают одну голову и
+    второй рвёт хеш-цепочку: verify обязан быть ВНУТРИ замка;
+    (2) лочить сам журнал нельзя: залоченный байт 0 запрещает и ЧТЕНИЕ
+    другим процессам (PermissionError на verify), а байты у EOF у каждого
+    писца свои — замки разъезжаются. Сторож никто не читает — только лочит.
+    Замок не взялся — пишем без него (не роняем компиляцию)."""
+
+    def __init__(self, put: str):
+        self.put = put
+        self.storozh = None
+        self.zhurnal = None
+        self.vzyat = False
+
+    def __enter__(self):
+        try:
+            import msvcrt
+            put_st = self.put + ".zamok"
+            self.storozh = io.open(put_st, "ab")
+            try:
+                if os.path.getsize(put_st) == 0:
+                    self.storozh.write(b"0")
+                    self.storozh.flush()
+                self.storozh.seek(0)
+                msvcrt.locking(self.storozh.fileno(), msvcrt.LK_LOCK, 1)
+                self.vzyat = True
+            except OSError:
+                self.vzyat = False
+            self.zhurnal = io.open(self.put, "ab")
+        except OSError:
+            self.snyat()
+        return self
+
+    def pishi(self, stroka: str):
+        stroka = stroka if stroka.endswith("\n") else stroka + "\n"
+        if self.zhurnal is not None:
+            try:
+                self.zhurnal.write(stroka.encode("utf-8"))
+                self.zhurnal.flush()
+                return
+            except OSError:
+                pass
+        with io.open(self.put, "a", encoding="utf-8") as fh:
+            fh.write(stroka)
+
+    def snyat(self):
+        if self.storozh is not None and self.vzyat:
+            try:
+                import msvcrt
+                self.storozh.seek(0)
+                msvcrt.locking(self.storozh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        for fh in (self.zhurnal, self.storozh):
+            if fh is not None:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+        self.zhurnal = None
+        self.storozh = None
+
+    def __exit__(self, *slovar):
+        self.snyat()
+        return False
+
+
+def _dobavit_stroku(put: str, stroka: str):
+    """Строка в append-журнал (reestr/letopis) под замком байта 0."""
+    with _Zamok(put) as z:
+        z.pishi(stroka)
+
+
 def _chitat_yakor() -> str:
     try:
         with io.open(YAKOR, encoding="utf-8") as fh:
@@ -462,17 +538,28 @@ def _proverit_letopis() -> str:
     return golova
 
 
+def _dopisat_letopis(zapis: dict) -> str:
+    """Проверить цепь, дописать запись, обновить якорь — ВСЁ под одним
+    замком (verify вне замка рвал цепь: два писца читали одну голову).
+    Общая для компиляции сделки и сборки проекта [v0.3.0]."""
+    with _Zamok(LETOPIS) as z:
+        zapis["pred"] = _proverit_letopis()
+        zapis["hesh_zapisi"] = dast.hesh(json.dumps(
+            {k: v for k, v in zapis.items()}, ensure_ascii=False, sort_keys=True))
+        z.pishi(json.dumps(zapis, ensure_ascii=False, sort_keys=True))
+        _pisat_yakor(zapis["hesh_zapisi"])
+    return zapis["hesh_zapisi"]
+
+
 def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
     """Летопись (нельзя укоротить — теперь и ПРОВЕРЯЕТСЯ) + реестр (хеш → компонент).
     [v0.1.3, аудит: хеш уже в реестре — лёгкая запись без полного AST;
     append-only реестр не раздувается дублями.]"""
-    pred = _proverit_letopis()
-    zapis = {"kogda": time.time(), "kto": kto, "hesh": hesh, "pred": pred,
+    zapis = {"kogda": time.time(), "kto": kto, "hesh": hesh,
              "sdelki": [s["имя"] for s in ast.get("сделки", [])],
              "zelenye": sum(1 for s in svody if s["зелёная"]),
              "vsego": len(svody)}
-    zapis["hesh_zapisi"] = dast.hesh(json.dumps({k: v for k, v in zapis.items()},
-                                           ensure_ascii=False, sort_keys=True))
+    zapis["hesh_zapisi"] = _dopisat_letopis(zapis)
     uzh = False
     if os.path.exists(REESTR):
         with io.open(REESTR, encoding="utf-8") as fh:
@@ -485,10 +572,7 @@ def stadija_6_7(ast: dict, hesh: str, svody: list, kto: str):
         reestr_zapis["tip"] = "povtor"
     else:
         reestr_zapis["ast"] = ast
-    for put, obekt in ((LETOPIS, zapis), (REESTR, reestr_zapis)):
-        with io.open(put, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(obekt, ensure_ascii=False, sort_keys=True) + "\n")
-    _pisat_yakor(zapis["hesh_zapisi"])   # [v0.2.1] якорь головы для следующей проверки
+    _dobavit_stroku(REESTR, json.dumps(reestr_zapis, ensure_ascii=False, sort_keys=True))
 
 
 def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
@@ -497,8 +581,7 @@ def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
     zapis = {"kogda": time.time(), "kto": "otkaz", "tip": "otkaz",
              "stad": stad, "vinovnik": vinovnik, "prichina": prichina,
              "chto": chto, "fajl": os.path.basename(put_fayla)}
-    with io.open(REESTR, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(zapis, ensure_ascii=False, sort_keys=True) + "\n")
+    _dobavit_stroku(REESTR, json.dumps(zapis, ensure_ascii=False, sort_keys=True))
 
 
 def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
@@ -553,10 +636,38 @@ if __name__ == "__main__":
             del argv[i]
         else:
             i += 1
+    # [v0.3.0, №10] сборка проекта: путь-файл не нужен, нужен путь-папка
+    if "--собрать-проект" in argv:
+        i = argv.index("--собрать-проект")
+        if i + 1 >= len(argv):
+            print(json.dumps({"стадия": 1, "виновник": "сборка проекта",
+                              "причина": "не указана папка",
+                              "что_править": "зов: kompilyator.py --собрать-проект <папка>"},
+                             ensure_ascii=False))
+            raise SystemExit(2)
+        papka = argv[i + 1]
+        del argv[i:i + 2]
+        from deal import proekt
+        try:
+            svod = proekt.sobrat_proekt(papka, parall=parall, kesh=kesh,
+                                        kesh_proba=kesh_proba)
+        except Exception as otk:
+            # [мина v0.3.0] скрипт живёт как __main__, а proekt импортирует
+            # deal.kompilyator ВТОРОЙ копией — её Otkaz другого класса,
+            # except по классу не ловит. Судим по словам (stad/vinovnik есть
+            # — отказ компилятора словами; нет — честно роняем дальше).
+            if not hasattr(otk, "stad"):
+                raise
+            print(json.dumps({"стадия": otk.stad, "виновник": otk.vinovnik,
+                              "причина": otk.prichina, "что_править": otk.chto},
+                             ensure_ascii=False))
+            raise SystemExit(1)
+        print(json.dumps(svod, ensure_ascii=False))
+        raise SystemExit(0 if not svod.get("отказы_список") else 1)
     argv = [a for a in argv if not a.startswith("--")]
     if not argv:
         print("зов: python deal/kompilyator.py <файл.deal> [--parall] [--bez-kesh] "
-              "[--kesh-proba N]")
+              "[--kesh-proba N] | --собрать-проект <папка>")
         raise SystemExit(2)
     try:
         itog = sobrat(argv[0], kto="ruki", parall=parall, kesh=kesh,
