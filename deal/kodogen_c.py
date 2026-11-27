@@ -14,6 +14,11 @@ QWEN: его черновик, наши ГРАНИЦЫ-гейты поверх].
   - присвоение до чтения [v0.10.1]: чтение локала до его присваивания
     на любом пути → не поддержана (в ВМ это отказ «нет_имени», натив
     молчал бы от 0.0 — гейт ловит расхождение ДО эмиссии);
+  - требует [v0.10.1, поймано CI 170/171]: кернел-выражение ПО ВХОДАМ —
+    эмитится проверкой нарушен_договор до тела (как судит ВМ); иначе
+    сделка не поддержана;
+  - пути закрыты [v0.10.1]: каждый путь кончается «верни»/«стой» —
+    в ВМ падение с конца = пусто, натив вернул бы 0.0;
   - только числовые кернелы (входы число, опы кернела — _podderzhivaema);
   - статсуд остаётся в компиляторе: натив эмитит доказанные тела.
 
@@ -188,14 +193,38 @@ def _granitsy(telo):
             _granitsy(st.get("тело", []))
 
 
+def _vse_puti_zakryty(telo):
+    """[наш гейт 6] каждый путь тела кончается «верни» или «стой»: в ВМ
+    падение с конца = пусто, а натив вернул бы 0.0. Цикл может не
+    выполнить ни витка — тело цикла путь не закрывает."""
+    for st in telo:
+        op = st.get("оп")
+        if op in ("верни", "стой"):
+            return True
+        if op == "если" and _vse_puti_zakryty(st.get("то", [])) \
+                and _vse_puti_zakryty(st.get("иначе", [])):
+            return True
+    return False
+
+
 def podderzhivaema(sdelka, sdelki):
     """True — сделка проезжает натив-гейты целиком (число-входы, кернел-опы,
     без рекурсивных циклов зову, циклы с константными границами ≤ 2^53,
-    присвоение до чтения на всех путях)."""
+    присвоение до чтения на всех путях, требует — кернел-выражение по
+    входам; натив эмитит его проверку как нарушен_договор)."""
     if any(v.get("тип") != "число" for v in sdelka.get("входы", [])):
         return False
     videl = {sdelka["имя"]}
     telo = sdelka.get("тело", [])
+    treb = sdelka.get("требует")
+    if treb is not None:
+        if not _podderzh(treb, sdelki, videl):
+            return False
+        # [v0.10.1] требует судится ВМ по входам ДО тела — натив так же:
+        # чтение в требует, чего нет среди входов, → не поддержана
+        if _chteniya(treb, set()) - {v["имя"]
+                                     for v in sdelka.get("входы", [])}:
+            return False
     if not _podderzh(telo, sdelki, videl):
         return False
     if _cikly_zovov(sdelki, videl):
@@ -206,6 +235,8 @@ def podderzhivaema(sdelka, sdelki):
             vhod_imena = {v["имя"] for v in t.get("входы", [])}
             _pripisano_do_chteniya(t.get("тело", []), vhod_imena)
             _granitsy(t.get("тело", []))
+            if not _vse_puti_zakryty(t.get("тело", [])):
+                return False  # [гейт 6] падение с конца: ВМ — пусто, C — 0.0
     except ГейтОтказ:
         return False
     return True
@@ -281,6 +312,11 @@ def emit(sdelki):
     for n, d in sdelki.items():
         src.append("double %s(%s) {" % (I(n), ", ".join("double " + I(v["имя"])
                                                         for v in d["входы"])))
+        # [v0.10.1] требует — контракт судится ДО тела (как в ВМ), имя
+        # отказа канон-ное: нарушен_договор
+        if d.get("требует") is not None:
+            src.append('  if (!(%s)) deal_refusal("нарушен_договор");'
+                       % _ex(d["требует"], I))
         for v in sorted(_assigned(d["тело"], set())):
             src.append("  double %s = 0;" % I(v))
         _body(d["тело"], src, "  ", I)
