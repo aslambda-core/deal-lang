@@ -70,12 +70,21 @@ def main():
 
     itog = []
     rassh = 0
+    propush = 0
+    ПРЕДЕЛ = 2 ** 53
     for im in podderzh:
         sdelka = sdelki[im]
         telo = sdelka.get("тело", [])
         for n, kz in enumerate(sdelka.get("свидетель", []), 1):
             vhod = kz.get("вход", {})
             argy = [vhod.get(v["имя"]) for v in sdelka.get("входы", [])]
+            # [v0.10.1] тип-кейсы и >2^53: контракт типов и f64-канон судит
+            # ВМ; натив такими аргументами не зовётся (named-пропуск)
+            if not all(isinstance(a, (int, float))
+                       and not isinstance(a, bool)
+                       and abs(a) <= ПРЕДЕЛ for a in argy):
+                propush += 1
+                continue
             dvm._toplivo_sbrodit()
             try:
                 r = dvm.vypolnit_telo(json.loads(json.dumps(telo)),
@@ -99,7 +108,8 @@ def main():
                                                  json.dumps(a, ensure_ascii=False),
                                                  json.dumps(b, ensure_ascii=False)))
         raise SystemExit(1)
-    print("натив-гейт: %d/%d кейсов — ВМ и C сходятся" % (vsego, vsego))
+    print("натив-гейт: %d/%d кейсов — ВМ и C сходятся "
+          "(пропущено named: %d)" % (vsego, vsego, propush))
     shutil.rmtree(katalog, ignore_errors=True)
 
 

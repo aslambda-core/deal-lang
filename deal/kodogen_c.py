@@ -81,8 +81,12 @@ def _podderzh(x, sdelki, videl):
                 videl.add(im)
                 if not _podderzh(sdelki[im]["тело"], sdelki, videl):
                     return False
-        if op == "константа" and not isinstance(x.get("значение"), (int, float)):
-            return False
+        if op == "константа":
+            zn = x.get("значение")
+            if not isinstance(zn, (int, float)):
+                return False
+            if isinstance(zn, bool) or abs(zn) > ПРЕДЕЛ:
+                return False  # [v0.10.1] f64-канон: > 2^53 теряет точность
         return all(_podderzh(v, sdelki, videl) for v in x.values())
     if isinstance(x, list):
         return all(_podderzh(v, sdelki, videl) for v in x)
