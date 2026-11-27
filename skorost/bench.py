@@ -155,4 +155,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # [v0.10.1] cp1252-stdout Windows падал на кириллице отчёта (CI P0)
+    for _p in (sys.stdout, sys.stderr):
+        if hasattr(_p, "reconfigure"):
+            _p.reconfigure(encoding="utf-8", errors="replace")
     main()

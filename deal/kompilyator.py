@@ -451,6 +451,11 @@ def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
 
 if __name__ == "__main__":
     import sys
+    # [v0.10.1] Windows-stdout по умолчанию cp1252 — кириллица сводки
+    # падала UnicodeEncodeError (CI-windows, P0): говорим utf-8 везде
+    for _p in (sys.stdout, sys.stderr):
+        if hasattr(_p, "reconfigure"):
+            _p.reconfigure(encoding="utf-8", errors="replace")
     argv = list(sys.argv[1:])
     parall = "--parall" in argv          # [v0.2.0] пул процессов на свидетелей
     kesh = "--bez-kesh" not in argv      # [v0.2.0] кеш вердиктов включён по умолчанию

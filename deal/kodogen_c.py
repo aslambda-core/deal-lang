@@ -11,6 +11,9 @@ QWEN: его черновик, наши ГРАНИЦЫ-гейты поверх].
   - рекурсия: цикл в графе зову → отказ на входе (стек C без контракта);
   - «для-каждого-до»: только КОНСТАНТА ≤ 2^53 (переменная граница не
     доказывает завершение, double-счётчик врёт выше 2^53);
+  - присвоение до чтения [v0.10.1]: чтение локала до его присваивания
+    на любом пути → не поддержана (в ВМ это отказ «нет_имени», натив
+    молчал бы от 0.0 — гейт ловит расхождение ДО эмиссии);
   - только числовые кернелы (входы число, опы кернела — _podderzhivaema);
   - статсуд остаётся в компиляторе: натив эмитит доказанные тела.
 
@@ -114,6 +117,52 @@ def _cikly_zovov(sdelki, videl):
     return any(obhod(im, set()) for im in sdelki if im in videl)
 
 
+def _chteniya(e, acc):
+    """Имена, читаемые в выражении (поля-локалы, аргументы зовов)."""
+    if isinstance(e, dict):
+        if e.get("оп") == "поле":
+            acc.add(e.get("имя"))
+        for v in e.values():
+            _chteniya(v, acc)
+    elif isinstance(e, list):
+        for v in e:
+            _chteniya(v, acc)
+    return acc
+
+
+def _smotri_chteniya(e, est):
+    """[наш гейт 4] любое чтение в выражении — из присвоенных имён."""
+    for im in _chteniya(e, set()):
+        if im not in est:
+            raise ГейтОтказ(
+                "натив-гейт: чтение «%s» до присваивания — в ВМ это отказ "
+                "«нет_имени», натив молчал бы от 0.0" % im)
+
+
+def _pripisano_do_chteniya(telo, est):
+    """[наш гейт 4] «присвоение до чтения»: каждое чтение локала — после
+    присваивания на ВСЕХ путях (консервативно: если-ветки — пересечение,
+    присвоения из тела цикла наружу не выходят). Возвращает множество
+    имён, присвоенных на всех путях к концу тела."""
+    for st in telo:
+        op = st.get("оп")
+        if op == "присваивание":
+            _smotri_chteniya(st.get("что", {}), est)
+            est = est | {st["имя"]}
+        elif op == "верни":
+            _smotri_chteniya(st.get("что", {}), est)
+        elif op == "если":
+            _smotri_chteniya(st.get("условие", {}), est)
+            d_to = _pripisano_do_chteniya(st.get("то", []), set(est))
+            d_iz = _pripisano_do_chteniya(st.get("иначе", []), set(est))
+            est = d_to & d_iz
+        elif op == "для-каждого-до":
+            _smotri_chteniya(st.get("до", {}), est)
+            _pripisano_do_chteniya(st.get("тело", []),
+                                   est | {st.get("переменная")})
+    return est
+
+
 def _granitsy(telo):
     """[наш гейт] «до» цикла — только константа ≤ 2^53 (переменная граница
     не доказывает завершение; double-счётчик врёт выше 2^53)."""
@@ -137,7 +186,8 @@ def _granitsy(telo):
 
 def podderzhivaema(sdelka, sdelki):
     """True — сделка проезжает натив-гейты целиком (число-входы, кернел-опы,
-    без рекурсивных циклов зову, циклы с константными границами ≤ 2^53)."""
+    без рекурсивных циклов зову, циклы с константными границами ≤ 2^53,
+    присвоение до чтения на всех путях)."""
     if any(v.get("тип") != "число" for v in sdelka.get("входы", [])):
         return False
     videl = {sdelka["имя"]}
@@ -148,7 +198,10 @@ def podderzhivaema(sdelka, sdelki):
         return False
     try:
         for im in videl:
-            _granitsy(sdelki[im].get("тело", []))
+            t = sdelki[im]
+            vhod_imena = {v["имя"] for v in t.get("входы", [])}
+            _pripisano_do_chteniya(t.get("тело", []), vhod_imena)
+            _granitsy(t.get("тело", []))
     except ГейтОтказ:
         return False
     return True
@@ -239,6 +292,8 @@ def emit(sdelki):
 def sobrat(sdelki, katalog=None):
     katalog = katalog or tempfile.mkdtemp(prefix="deal_c_")
     src, I = emit(sdelki)
+    os.makedirs(katalog, exist_ok=True)  # [v0.10.1] CI-ubuntu: rmtree по
+    # несуществующей папке проходил молча — deal.c писался в никуда
     cf = os.path.join(katalog, "deal.c")
     so = os.path.join(katalog, "libdeal.so")
     with open(cf, "w", encoding="utf-8") as fh:
