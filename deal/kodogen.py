@@ -113,10 +113,16 @@ def _iden_ok(imya):
 
 
 def _gen_telo(telo, otstup, stroki):
-    """Генерация тела; пустой блок канона = pass (питон требует непустой)."""
+    """Генерация тела; пустой блок канона = pass (питон требует непустой).
+    [v0.9.0, раунд 10 QWEN: ЕДИНЫЙ канон топлива] _sf() перед КАЖДЫМ
+    оператором (шаг = оператор тела DEAL, как в AST); прежний счёт
+    «раз на виток цикла» давал вердикт, зависящий от рубильника. Операторы
+    тела цикла генерируются ВНУТРИ python-for — их _sf() исполняется на
+    каждой итерации, сам «для» считается один раз."""
     bilo = len(stroki)
     for st in telo:
         op = st.get("оп")
+        stroki.append("%s_sf()" % otstup)
         if op == "присваивание":
             stroki.append("%senv[%s] = %s" % (otstup, repr(st["имя"]), _vyr(st["что"])))
         elif op == "верни":
@@ -146,7 +152,6 @@ def _gen_telo(telo, otstup, stroki):
                                 "имя переменной цикла «%s» — не идентификатор канона "
                                 "(латиница/кириллица/цифры/_ без кавычек и черточек)" % perem)
             stroki.append("%sfor %s in range(int(%s)):" % (otstup, perem, _vyr(st["до"])))
-            stroki.append("%s    _sf()" % otstup)   # [v0.1.3] топливо в кодогене
             stroki.append("%s    env[%s] = %s" % (otstup, repr(perem), perem))
             _gen_telo(st.get("тело", []), otstup + "    ", stroki)
         else:
