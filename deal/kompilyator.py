@@ -527,6 +527,11 @@ if __name__ == "__main__":
             raise SystemExit(1)
         print(json.dumps(svod, ensure_ascii=False))
         raise SystemExit(0 if not svod.get("отказы_список") else 1)
+    # [v0.5.0, №11] покрытие ветвей/циклов канон-честно — механика в
+    # deal/pokrytie.py (норма 600); СОВЕТ по умолчанию, строгость флагом
+    if "--покрытие" in argv:
+        from deal import pokrytie as dpok
+        raise SystemExit(dpok.iz_consolei(argv))
     argv = [a for a in argv if not a.startswith("--")]
     if not argv:
         print("зов: python deal/kompilyator.py <файл.deal> [--parall] [--bez-kesh] "
