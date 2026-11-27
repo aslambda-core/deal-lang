@@ -14,9 +14,10 @@ QWEN: его черновик, наши ГРАНИЦЫ-гейты поверх].
   - присвоение до чтения [v0.10.1]: чтение локала до его присваивания
     на любом пути → не поддержана (в ВМ это отказ «нет_имени», натив
     молчал бы от 0.0 — гейт ловит расхождение ДО эмиссии);
-  - требует [v0.10.1, поймано CI 170/171]: кернел-выражение ПО ВХОДАМ —
-    эмитится проверкой нарушен_договор до тела (как судит ВМ); иначе
-    сделка не поддержана;
+  - требует [v0.10.1, поймано CI 170/171 ×2]: кернел-выражение ПО ВХОДАМ —
+    эмитится ОБЁРТКОЙ ЗОВА deal_tr_<имя>: контракт судится ПРИ ЗОВЕ,
+    прямой вход сделки его не судит (семантика ВМ; второе расхождение
+    «ограниченная/2» поймало чек в теле функции); иначе не поддержана;
   - пути закрыты [v0.10.1]: каждый путь кончается «верни»/«стой» —
     в ВМ падение с конца = пусто, натив вернул бы 0.0;
   - только числовые кернелы (входы число, опы кернела — _podderzhivaema);
@@ -210,8 +211,8 @@ def _vse_puti_zakryty(telo):
 def podderzhivaema(sdelka, sdelki):
     """True — сделка проезжает натив-гейты целиком (число-входы, кернел-опы,
     без рекурсивных циклов зову, циклы с константными границами ≤ 2^53,
-    присвоение до чтения на всех путях, требует — кернел-выражение по
-    входам; натив эмитит его проверку как нарушен_договор)."""
+    присвоение до чтения на всех путях, пути закрыты, требует —
+    кернел-выражение по входам; его натив судит обёрткой зова)."""
     if any(v.get("тип") != "число" for v in sdelka.get("входы", [])):
         return False
     videl = {sdelka["имя"]}
@@ -242,23 +243,30 @@ def podderzhivaema(sdelka, sdelki):
     return True
 
 
-def _ex(e, I):
+def _ex(e, I, treb):
     op = e["оп"]
     if op == "константа":
         return repr(float(e["значение"]))
     if op == "поле":
         return I(e["имя"])
     if op == "арифметика":
-        l, r, c = _ex(e["лево"], I), _ex(e["право"], I), e["чем"]
+        l, r, c = _ex(e["лево"], I, treb), _ex(e["право"], I, treb), e["чем"]
         if c == "/":
             return "deal_div(%s,%s)" % (l, r)
         if c == "%":
             return "deal_mod(%s,%s)" % (l, r)
         return "(%s %s %s)" % (l, c, r)
     if op == "сравнение":
-        return "(%s %s %s)" % (_ex(e["лево"], I), e["чем"], _ex(e["право"], I))
+        return "(%s %s %s)" % (_ex(e["лево"], I, treb), e["чем"],
+                               _ex(e["право"], I, treb))
     if op == "зов":
-        return I(e["договор"]) + "(" + ", ".join(_ex(a, I) for a in e["аргументы"]) + ")"
+        # [v0.10.1] требует судится ПРИ ЗОВУ (контракт на зовущего, как
+        # в ВМ; прямой вход сделки контракт НЕ судит): зовём через
+        # обёртку deal_tr_<имя>, она проверяет контракт
+        im = e["договор"]
+        gol = "deal_tr_%s" % I(im) if im in treb else I(im)
+        return gol + "(" + ", ".join(_ex(a, I, treb)
+                                     for a in e["аргументы"]) + ")"
     raise ValueError("оп " + op)
 
 
@@ -274,26 +282,27 @@ def _assigned(t, acc):
     return acc
 
 
-def _body(t, out, ind, I):
+def _body(t, out, ind, I, treb):
     for st in t:
         op = st["оп"]
         if op == "присваивание":
-            out.append("%s%s = %s;" % (ind, I(st["имя"]), _ex(st["что"], I)))
+            out.append("%s%s = %s;" % (ind, I(st["имя"]),
+                                       _ex(st["что"], I, treb)))
         elif op == "верни":
-            out.append("%sreturn %s;" % (ind, _ex(st["что"], I)))
+            out.append("%sreturn %s;" % (ind, _ex(st["что"], I, treb)))
         elif op == "стой":
             out.append('%sdeal_refusal("%s");' % (ind, st["отказ"]))
         elif op == "если":
-            out.append("%sif (%s) {" % (ind, _ex(st["условие"], I)))
-            _body(st["то"], out, ind + "  ", I)
+            out.append("%sif (%s) {" % (ind, _ex(st["условие"], I, treb)))
+            _body(st["то"], out, ind + "  ", I, treb)
             out.append("%s} else {" % ind)
-            _body(st.get("иначе", []), out, ind + "  ", I)
+            _body(st.get("иначе", []), out, ind + "  ", I, treb)
             out.append("%s}" % ind)
         elif op == "для-каждого-до":
             v = I(st["переменная"])
             out.append("%sfor (double %s=0; %s<%s; ++%s) {" % (
-                ind, v, v, _ex(st["до"], I), v))
-            _body(st["тело"], out, ind + "  ", I)
+                ind, v, v, _ex(st["до"], I, treb), v))
+            _body(st["тело"], out, ind + "  ", I, treb)
             out.append("%s}" % ind)
 
 
@@ -306,21 +315,31 @@ def emit(sdelki):
            'static double deal_div(double a,double b){ if(b==0) deal_refusal("деление_на_ноль"); return a/b; }',
            'static double deal_mod(double a,double b){ if(b==0) deal_refusal("деление_на_ноль"); double r=fmod(a,b); if(r!=0 && ((r<0)!=(b<0))) r+=b; return r; }',
            'const char* deal_last_otkaz(void){ return deal_otkaz; }']
+    treb = {n: d["требует"] for n, d in sdelki.items()
+            if d.get("требует") is not None}
     for n, d in sdelki.items():
         src.append("double %s(%s);" % (I(n), ", ".join("double " + I(v["имя"])
                                                        for v in d["входы"])))
+        if n in treb:
+            src.append("static double deal_tr_%s(%s);"
+                       % (I(n), ", ".join("double " + I(v["имя"])
+                                          for v in d["входы"])))
     for n, d in sdelki.items():
         src.append("double %s(%s) {" % (I(n), ", ".join("double " + I(v["имя"])
                                                         for v in d["входы"])))
-        # [v0.10.1] требует — контракт судится ДО тела (как в ВМ), имя
-        # отказа канон-ное: нарушен_договор
-        if d.get("требует") is not None:
-            src.append('  if (!(%s)) deal_refusal("нарушен_договор");'
-                       % _ex(d["требует"], I))
         for v in sorted(_assigned(d["тело"], set())):
             src.append("  double %s = 0;" % I(v))
-        _body(d["тело"], src, "  ", I)
+        _body(d["тело"], src, "  ", I, treb)
         src.append("  return 0;\n}")
+    # [v0.10.1] контракт требует — в обёртке ЗОВА (как в ВМ: судится при
+    # зове и краевых пробах, НЕ в свидетелях и не при прямом входе)
+    for n, treb_expr in treb.items():
+        d = sdelki[n]
+        parami = ", ".join("double " + I(v["имя"]) for v in d["входы"])
+        src.append("static double deal_tr_%s(%s) { if (!(%s)) "
+                   'deal_refusal("нарушен_договор"); return %s(%s); }'
+                   % (I(n), parami, _ex(treb_expr, I, treb), I(n),
+                      ", ".join(I(v["имя"]) for v in d["входы"])))
     for n, d in sdelki.items():
         args = ", ".join("double " + I(v["имя"]) for v in d["входы"])
         call = ", ".join(I(v["имя"]) for v in d["входы"])
