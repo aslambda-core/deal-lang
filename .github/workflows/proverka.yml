@@ -33,6 +33,8 @@ jobs:
           python differ/прогон_питоном.py differ/korpus.json itogi_python.json
           node differ/прогон_js.js deal.js differ/korpus.json itogi_js.json
           python differ/сверка.py itogi_python.json itogi_js.json
+      - name: натив-гейт «ВМ == C» (прототип ступени 4)
+        run: python differ/гейт_нативом.py differ/korpus.json
       - name: строгое покрытие std (строки/списки/деньги — 100%)
         run: |
           python deal/kompilyator.py --покрытие std/строки.deal --покрытие-отказ

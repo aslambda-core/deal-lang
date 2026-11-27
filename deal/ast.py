@@ -16,13 +16,28 @@ from deal import vm as _dvm  # vm не зовёт ast — цикла нет; н�
 
 def zagruzit(put: str) -> dict:
     """[v0.4.2: мёртвый первый def снят — ниже определение с parse_constant,
-    которое перебивало его; жил всегда только второй.]"""
+    которое перебивало его; жил всегда только второй.]
+    [v0.10.0, раунд 11 QWEN: канон-дыра названа и закрыта] дубли ключей
+    JSON — load брал последний молча; теперь честный отказ «канон_нарушен»
+    (канон-список растёт решением по версии — прецедент «топлива» v0.1.2)."""
     def _zapret(slovo):
         raise _dvm.DealOtkaz("типы_не_сошлись",
                              "константа «%s» запрещена каноном (невалидный JSON) — "
                              "замени числом" % slovo)
+
+    def _bez_dubley(pary):
+        sl = {}
+        for k, v in pary:
+            if k in sl:
+                raise _dvm.DealOtkaz(
+                    "канон_нарушен",
+                    "дубль ключа «%s» в %s — текст неканоничен" % (k, put))
+            sl[k] = v
+        return sl
+
     with io.open(put, encoding="utf-8") as fh:
-        return json.load(fh, parse_constant=_zapret)
+        return json.load(fh, parse_constant=_zapret,
+                         object_pairs_hook=_bez_dubley)
 
 
 def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -> dict:
@@ -98,12 +113,26 @@ def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -
     return sdelki
 
 
+def _norm_0(o):
+    """[v0.10.0, раунд 11 QWEN: канон-дыра названа и закрыта] -0.0 и 0.0
+    численно равны — один канон-вид и один хеш (иначе два серийных хеша
+    одного смысла расходились)."""
+    if isinstance(o, float):
+        return 0.0 if o == 0.0 else o
+    if isinstance(o, dict):
+        return {k: _norm_0(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_norm_0(v) for v in o]
+    return o
+
+
 def kanon(obj) -> str:
     """Единственный серийный вид AST: сортировка ключей, без пробелов, utf-8.
     [v0.1.2] allow_nan=False — NaN не сериализуется молча.
-    [v0.4.2: мёртвый хвост после return снят.]"""
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-                      allow_nan=False)
+    [v0.4.2: мёртвый хвост после return снят.]
+    [v0.10.0] -0.0 нормализуется к 0.0 перед сериализацией."""
+    return json.dumps(_norm_0(obj), ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
 
 
 def hesh(obj) -> str:
