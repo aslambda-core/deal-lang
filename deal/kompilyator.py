@@ -585,13 +585,15 @@ def _otkaz_v_reestr(stad, vinovnik, prichina, chto, put_fayla):
 
 
 def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
-           kesh: bool = True, kesh_proba: int = 16) -> dict:
+           kesh: bool = True, kesh_proba: int = 16, pisat: bool = True) -> dict:
     """Полный цикл: файл .deal → суд всех стадий → реестр. Наружу — свод.
     [v0.2.0: kesh — вердикты чистых сделок из .deal_kesh/; parall — пул
     процессов на свидетелей. Верификация (ввозы по хешу, статика) не
     пропускается никогда — кешируется только исполнение.]
     [v0.2.1: kesh_proba — доля переисполнения попаданий кеша (1 из N;
-    0 — выключить, 1 — проверять каждое попадание).]"""
+    0 — выключить, 1 — проверять каждое попадание).]
+    [v0.4.0: pisat=False — суд БЕЗ записи реестра/летописи (прогон «до» в
+    суде превращения не мусорит хронику; отказы в реестр пишутся как были).]"""
     try:
         ast = dast.zagruzit(put_fayla)
         stadija_1_2(ast)
@@ -613,7 +615,8 @@ def sobrat(put_fayla: str, kto: str = "пилот", parall: bool = False,
     except dvm.DealOtkaz as otk:
         _otkaz_v_reestr(0, "исполнение", otk.imya, otk.prichina, put_fayla)
         raise
-    stadija_6_7(ast, hesh, svody, kto)
+    if pisat:
+        stadija_6_7(ast, hesh, svody, kto)
     return {"hesh": hesh, "svody": svody, "proekciya": dast.projekciya(ast)}
 
 
@@ -636,6 +639,33 @@ if __name__ == "__main__":
             del argv[i]
         else:
             i += 1
+    # [v0.4.0, №9] применение превращения: запрос JSON {файл, превращение, данные}
+    if "--превратить" in argv:
+        i = argv.index("--превратить")
+        if i + 1 >= len(argv):
+            print(json.dumps({"стадия": 4, "виновник": "превращение",
+                              "причина": "не указан файл запроса",
+                              "что_править": "зов: kompilyator.py --превратить "
+                              "<zapros.json>"}, ensure_ascii=False))
+            raise SystemExit(2)
+        zapros_put = argv[i + 1]
+        del argv[i:i + 2]
+        from deal import prevrashenie
+        try:
+            with io.open(zapros_put, encoding="utf-8") as fh:
+                zapros = json.load(fh)
+            itog = prevrashenie.primenit_zapros(zapros, kto="ruki",
+                                                kesh=kesh,
+                                                kesh_proba=kesh_proba)
+        except Exception as otk:   # [мина v0.3.0] суд по словам, не по классу
+            if not hasattr(otk, "stad"):
+                raise
+            print(json.dumps({"стадия": otk.stad, "виновник": otk.vinovnik,
+                              "причина": otk.prichina,
+                              "что_править": otk.chto}, ensure_ascii=False))
+            raise SystemExit(1)
+        print(json.dumps(itog, ensure_ascii=False))
+        raise SystemExit(0)
     # [v0.3.0, №10] сборка проекта: путь-файл не нужен, нужен путь-папка
     if "--собрать-проект" in argv:
         i = argv.index("--собрать-проект")
