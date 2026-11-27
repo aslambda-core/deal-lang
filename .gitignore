@@ -6,3 +6,5 @@ __pycache__/
 reestr.jsonl
 letopis.jsonl
 *.zamok
+polka/skorost_bench_tmp.json
+skorost/rezultat.json

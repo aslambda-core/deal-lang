@@ -20,7 +20,33 @@ import json
 import os
 import time
 
+# [v0.8.0, раунд 9 QWEN — БЛОКИРУЮЩИЙ баг: import msvcrt ловился только
+# OSError, на POSIX ModuleNotFoundError пролетал и компилятор падал на
+# стадии 6 на ЛЮБОМ файле («без зависимостей» де-факто = Windows-only)]
+try:
+    import msvcrt as _msvcrt
+except ImportError:                      # POSIX: тот же байт-замок через fcntl
+    _msvcrt = None
+    import fcntl as _fcntl
+
 from deal import ast as dast
+
+
+def _bajt_zamok(fh, vzyat):
+    """Байт 0 сторож-файла: msvcrt (Windows) / fcntl (POSIX).
+    True — взяли/сняли. Нюанс назван: LK_LOCK на Windows ждёт ~10 с,
+    lockf на POSIX ждёт безлимитно."""
+    try:
+        fh.seek(0)
+        if _msvcrt is not None:
+            _msvcrt.locking(fh.fileno(),
+                            _msvcrt.LK_LOCK if vzyat else _msvcrt.LK_UNLCK, 1)
+        else:
+            _fcntl.lockf(fh.fileno(),
+                         _fcntl.LOCK_EX if vzyat else _fcntl.LOCK_UN, 1)
+        return True
+    except OSError:
+        return False
 
 KOREN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REESTR = os.path.join(KOREN, "reestr.jsonl")
@@ -41,16 +67,13 @@ class _Zamok:
 
     def __enter__(self):
         try:
-            import msvcrt
             put_st = self.put + ".zamok"
             self.storozh = io.open(put_st, "ab")
             try:
                 if os.path.getsize(put_st) == 0:
                     self.storozh.write(b"0")
                     self.storozh.flush()
-                self.storozh.seek(0)
-                msvcrt.locking(self.storozh.fileno(), msvcrt.LK_LOCK, 1)
-                self.vzyat = True
+                self.vzyat = _bajt_zamok(self.storozh, True)
             except OSError:
                 self.vzyat = False
             self.zhurnal = io.open(self.put, "ab")
@@ -73,9 +96,7 @@ class _Zamok:
     def snyat(self):
         if self.storozh is not None and self.vzyat:
             try:
-                import msvcrt
-                self.storozh.seek(0)
-                msvcrt.locking(self.storozh.fileno(), msvcrt.LK_UNLCK, 1)
+                _bajt_zamok(self.storozh, False)
             except OSError:
                 pass
         for fh in (self.zhurnal, self.storozh):

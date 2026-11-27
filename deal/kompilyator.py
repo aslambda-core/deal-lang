@@ -467,6 +467,28 @@ if __name__ == "__main__":
             del argv[i]
         else:
             i += 1
+    # [v0.8.0, раунд 9 QWEN] рубильник пути исполнения без правки кода
+    rezhim = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--режим" and i + 1 < len(argv):
+            rezhim = argv[i + 1]
+            del argv[i:i + 2]
+        elif a.startswith("--режим="):
+            rezhim = a.split("=", 1)[1]
+            del argv[i]
+        else:
+            i += 1
+    if rezhim:
+        if rezhim not in ("аст", "байткод", "кодоген"):
+            print(json.dumps({"стадия": 1, "виновник": "--режим",
+                              "причина": "неизвестный режим «%s»" % rezhim,
+                              "что_править": "аст | байткод | кодоген"},
+                             ensure_ascii=False))
+            raise SystemExit(2)
+        dvm.РЕЖИМ.update(байткод=(rezhim == "байткод"),
+                          кодоген=(rezhim == "кодоген"))
     # [v0.4.0, №9] применение превращения: запрос JSON {файл, превращение, данные}
     if "--превратить" in argv:
         i = argv.index("--превратить")
