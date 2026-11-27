@@ -15,8 +15,14 @@ from deal import vm as _dvm  # vm не зовёт ast — цикла нет; н�
 
 
 def zagruzit(put: str) -> dict:
+    """[v0.4.2: мёртвый первый def снят — ниже определение с parse_constant,
+    которое перебивало его; жил всегда только второй.]"""
+    def _zapret(slovo):
+        raise _dvm.DealOtkaz("типы_не_сошлись",
+                             "константа «%s» запрещена каноном (невалидный JSON) — "
+                             "замени числом" % slovo)
     with io.open(put, encoding="utf-8") as fh:
-        return json.load(fh)
+        return json.load(fh, parse_constant=_zapret)
 
 
 def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -> dict:
@@ -66,9 +72,10 @@ def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -
                                  "ввоз «%s» из «%s»: хеш файла не совпал заявленному "
                                  "(%s… ≠ %s…) — договор изменился" % (imya, iz, hesh_fakt[:12],
                                                                       str(vvoz.get("хеш"))[:12]))
-        if imya in sdelki and sdelki[imya] is not chuzhie[imya]:
-            raise _dvm.DealOtkaz("нарушен_договор",
-                                 "ввоз «%s»: имя занято местной сделкой" % imya)
+        # [v0.4.2, мина: стоявшая тут проверка «имя занято местной сделкой»
+        # читала chuzhie ДО его определения — NameError вместо честного
+        # отказа; коллизии ловит спуск ниже (обход chuzhie.items() против
+        # locals+ввозов), который шире — покрывает и ввозимые ветки]
         chuzhie = sdelki_s_vvozyami(chuzhoj, os.path.dirname(put),
                                     put_steka + [put], kesh_heshey)
         if imya not in chuzhie:
@@ -91,24 +98,12 @@ def sdelki_s_vvozyami(ast: dict, papka: str, put_steka=None, kesh_heshey=None) -
     return sdelki
 
 
-def zagruzit(put: str) -> dict:
-    # [v0.1.2, аудит: NaN/Infinity — невалидный JSON для строгих парсеров;
-    # канон запрещает их на входе, не на выходе serialization]
-    def _zapret(slovo):
-        raise _dvm.DealOtkaz("типы_не_сошлись",
-                             "константа «%s» запрещена каноном (невалидный JSON) — "
-                             "замени числом" % slovo)
-    with io.open(put, encoding="utf-8") as fh:
-        return json.load(fh, parse_constant=_zapret)
-
-
 def kanon(obj) -> str:
     """Единственный серийный вид AST: сортировка ключей, без пробелов, utf-8.
-    [v0.1.2] allow_nan=False — NaN не сериализуется молча.]"""
+    [v0.1.2] allow_nan=False — NaN не сериализуется молча.
+    [v0.4.2: мёртвый хвост после return снят.]"""
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
                       allow_nan=False)
-    """Единственный серийный вид AST: сортировка ключей, без пробелов, utf-8."""
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def hesh(obj) -> str:

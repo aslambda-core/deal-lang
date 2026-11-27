@@ -21,7 +21,7 @@ from deal import vm as dvm
 from deal import kompilyator as dkom
 
 NABOR_PROEKT = {"переименовать-с-переносом-зовущих", "влить-сделки",
-                "удвоить-компонент-с-вариацией"}
+                "удвоить-компонент-с-вариацией", "расколоть-по-шву"}
 
 
 # ════════ проектные превращения [v0.4.1] — поверх --собрать-проекта ════════
@@ -352,6 +352,17 @@ def primenit_proektnoe(zapros: dict, kto: str = "пилот",
                              "файл %s уже есть" % novy_rel,
                              "укажи другой суффикс")
         tronuto = [os.path.join(papka, novy_rel)]
+    elif prevrashenie == "расколоть-по-шву":
+        # [v0.4.2, ступень 3] механика в deal/prevrashenie_raskol.py:
+        # живые переменные + перегонка свидетелей через шов; здесь —
+        # регистрация нового файла, каскад хешей дошьёт ввоз головы
+        from deal import prevrashenie_raskol as dras
+        tronuto, novy_rel, novy_ast = dras._p_raskol(papka, fayly, asty,
+                                                     dannye)
+        novy_abs = os.path.normpath(os.path.join(papka, novy_rel))
+        asty[novy_abs] = novy_ast
+        tronuto = sorted(set(tronuto) | {novy_abs}
+                         | set(_kaskad_heshey(fayly + [novy_abs], asty)))
 
     # ── стенд: будущее дерево целиком — суд «после» гоняет его ──
     stazh = papka + ".prev.tmp"
