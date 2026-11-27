@@ -40,6 +40,7 @@ import copy
 import io
 import json
 import os
+import shutil
 
 from deal import ast as dast
 from deal import kompilyator as dkom
@@ -47,6 +48,10 @@ from deal import kompilyator as dkom
 NABOR = {"ввести-сделку", "заменить-тело", "добавить-кейс-свидетель",
          "убрать-кейс", "сузить-требует", "расширить-даёт",
          "добавить-отказ", "заменить-зов"}
+
+# проектные превращения (поверх --собрать-проекта): запрос несёт «папка»
+NABOR_PROEKT = {"переименовать-с-переносом-зовущих", "влить-сделки",
+                "удвоить-компонент-с-вариацией"}
 
 
 def _sdelka(ast: dict, imya, prichina):
